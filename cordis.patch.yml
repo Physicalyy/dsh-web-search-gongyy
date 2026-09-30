@@ -1,0 +1,28 @@
+# dsh bundle patch for dsh-web-search-gongyy.
+#
+# 作为 profile layer 按 dsh.profile.bundles 顺序应用；后一层按 entry id 覆盖前一层，
+# 所以下面的 `web` 重指会盖过 dsh-base 钉死的 `searchProvider: deepseek-official`。
+# 装上本插件即接管 web 搜索；卸载时这一层随之消失，回落到底层路由，不需要手改 profile。
+
+# 把宿主半边纳入运行组合。
+- insert:
+    - id: web-search-gongyy
+      name: 'dsh-web-search-gongyy'
+
+# 把 web seam 的搜索能力重指到本插件的 provider。
+#
+# 为什么只重指 searchProvider：本插件只注册 search provider。若这里也写
+# fetchProvider: web-search-gongyy，seam 会在 fetch 时找不到该 id 并抛
+# WEB_PROVIDER_CONFIGURED_MISSING —— 等于把 web_fetch 弄坏。
+# 保持 fetchProvider 不变，web_fetch 继续由组合层原本的 provider 提供。
+- id: web
+  config:
+    searchProvider: web-search-gongyy
+
+# tool-web 故意不在这里 patch。
+#
+# 自 dsh 0.1.5 起，面向模型的 web 工具由组合层自己挂载：dsh-base 的 `tool-web` 行
+# 负责 TUI/headless，每条 agent preset 又在自己的作用域里挂一份。preset 文件由
+# dsh-agent-presets 从自己的根目录加载，不属于 profile patch 栈，bundle patch 够不到
+# 也不需要够到 —— 它们都通过上面那个 seam 取数。在这里再挂一次只会重复注册
+# web_fetch，而 per-agent 作用域会遮蔽全局注册，自挂的那份永远无法被切换。

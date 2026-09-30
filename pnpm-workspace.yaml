@@ -1,0 +1,25 @@
+packages:
+  - .
+
+# 必须用 hoisted。
+#
+# pnpm 默认的 isolated linker 会把依赖装成指向 `Global\D:\...` 的 junction，
+# 而 Node 的 realpath 处理不了这种目标 —— 解析传递依赖时会退回到链接路径去查找，
+# 于是 cordis/schemastery 的依赖（cosmokit、@standard-schema/spec）全部找不到，
+# 运行时报 ERR_MODULE_NOT_FOUND。
+#
+# hoisted 同时与目标环境的布局一致：DSH 的 desktop profile 用的就是
+# `nodeLinker: hoisted`。
+nodeLinker: hoisted
+
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-brand@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-credentials@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-invariants@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-launch-environment@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-llm@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-timeout@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-typert-protocol@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-util-crypto@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-util-values@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-web@0.2.0-rc.2'

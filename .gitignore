@@ -1,0 +1,7 @@
+node_modules/
+dist/
+
+# 编辑器 / 系统噪音
+.DS_Store
+Thumbs.db
+*.log
