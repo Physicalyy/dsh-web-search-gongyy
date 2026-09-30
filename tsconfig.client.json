@@ -1,0 +1,41 @@
+{
+  // 客户端半边单独一份配置：产出 CommonJS，再由 wrap-client.cjs 包进
+  // window.__ModuleLoader__.load({ id, factory })。
+  //
+  // 为什么用 paths 显式映射：客户端侧的 Context 增强（ctx.slots / ctx.configForms /
+  // plugins.* 插槽类型）都在各包的 **`/client` 子路径**下，而这些子路径是 exports 映射，
+  // 只有 node16 / nodenext / bundler 三种解析能走通。但我们**必须**产出 CommonJS，
+  // 而 CommonJS 与那三种解析模式互斥（bundler 要求 module 为 preserve/es2015+，
+  // node16/nodenext 会把 "type": "module" 包里的文件当 ESM）。
+  //
+  // 所以保留 node10 解析 + CJS 产出，用 paths 把那三个子路径指到真实 .d.ts 上。
+  // 新增客户端依赖且它也用 /client 子路径时，这里要补一行。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": false,
+    "types": [],
+    "declaration": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-client-ui-renderer/client": [
+        "node_modules/@deepseek-ai/dsh-client-ui-renderer/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-settings/client": [
+        "node_modules/@deepseek-ai/dsh-client-ui-settings/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-plugin-manager/client": [
+        "node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src/client.tsx"],
+  "exclude": []
+}

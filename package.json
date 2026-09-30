@@ -23,17 +23,34 @@
     "anysearch",
     "tavily"
   ],
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./package.json": "./package.json"
+  },
   "dsh": {
+    "name": "web-search-gongyy",
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "tsc && node --test \"test/*.test.mjs\"",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && node wrap-client.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test \"test/*.test.mjs\"",
     "check": "node scripts/check-package.mjs",
-    "prepublishOnly": "node scripts/check-package.mjs && tsc --noEmit && tsc && node --test \"test/*.test.mjs\""
+    "prepublishOnly": "node scripts/check-package.mjs && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.json && tsc -p tsconfig.client.json && node wrap-client.cjs && node --test \"test/*.test.mjs\""
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
@@ -61,12 +78,21 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
     "@deepseek-ai/dsh-launch-environment": "0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
     "@deepseek-ai/dsh-web": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
     "@types/node": "^22.10.0",
+    "@types/react": "~18.3.31",
+    "@types/react-dom": "~18.3.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.7.2"
   }
 }
