@@ -100,20 +100,18 @@ function platformRequire(specifier, primitivesStub) {
   throw new Error(`bundle 请求了非平台模块："${specifier}" —— 它应当由壳提供，不该被打包`);
 }
 
-/** 假 cordis context：记录调用链，并让依赖"立即就绪"。 */
+/**
+ * 假 cordis context。
+ *
+ * **关键：它只暴露已声明的服务** —— 访问一个没写进 `inject` 的服务会抛错，与真实 cordis
+ * 的注入语义一致。这样"用到了却没声明"这类 bug 在测试里就会红，而不是静默地让用户
+ * 在界面上看到"配置区不见了"（**真踩过一次**：`ctx.locale` 用了但没 inject，
+ * apply 一开头就抛，客户端半边整个静默失效）。
+ */
 function fakeContext() {
   const calls = [];
-  const ctx = {
-    inject: (deps, callback) => {
-      calls.push({ kind: 'inject', deps });
-      callback(ctx); // 真实实现是依赖就绪后回调；这里模拟立刻就绪
-      return {};
-    },
-    effect: (callback) => {
-      calls.push({ kind: 'effect' });
-      callback();
-      return () => {};
-    },
+
+  const implementations = {
     locale: {
       register: (ns, dicts) => {
         calls.push({ kind: 'locale.register', ns, dicts });
@@ -147,6 +145,34 @@ function fakeContext() {
       },
     },
   };
+
+  let declared = [];
+  const ctx = {
+    inject: (deps, callback) => {
+      declared = deps;
+      calls.push({ kind: 'inject', deps });
+      callback(ctx); // 真实实现是依赖就绪后回调；这里模拟立刻就绪
+      return {};
+    },
+    effect: (callback) => {
+      calls.push({ kind: 'effect' });
+      callback();
+      return () => {};
+    },
+    get: (name) => implementations[name],
+  };
+
+  for (const [name, implementation] of Object.entries(implementations)) {
+    Object.defineProperty(ctx, name, {
+      get() {
+        if (!declared.includes(name)) {
+          throw new Error(`服务 "${name}" 没写进 inject 就被访问了 —— 真实 cordis 会拒绝`);
+        }
+        return implementation;
+      },
+    });
+  }
+
   return { ctx, calls };
 }
 
@@ -198,16 +224,17 @@ describe('客户端 bundle', () => {
     assert.deepEqual(enKeys, zhKeys, '两个词典的 key 必须一一对应（类型化注册也会强制）');
   });
 
-  it('apply() 等 slots 与 configForms 就绪后再注册插槽', () => {
+  it('apply() 等 slots / configForms / locale 就绪后再注册插槽', () => {
     const exports = loadBundle().factory((spec) => platformRequire(spec, stubPrimitives()));
     const { ctx, calls } = fakeContext();
 
-    assert.doesNotThrow(() => exports.apply(ctx));
+    // 假 ctx 只暴露已声明的服务：这里一旦抛错，就说明"用了却没 inject"。
+    assert.doesNotThrow(() => exports.apply(ctx), '访问未声明的服务会抛错');
 
     assert.deepEqual(
       calls.find((call) => call.kind === 'inject')?.deps,
-      ['slots', 'configForms'],
-      '应当用 ctx.inject 等待这两个服务',
+      ['slots', 'configForms', 'locale'],
+      '用到的三个服务都必须声明（locale 漏过一次，导致客户端半边静默失效）',
     );
     assert.deepEqual(
       calls.find((call) => call.kind === 'configForms.whileServed')?.namespaces,

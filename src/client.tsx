@@ -302,11 +302,17 @@ function ConfigCard(props: CardProps) {
  * 刻意**不导出顶层 `inject`** —— 见文件头注释。
  */
 export function apply(ctx: Context): void {
-  // 词典：类型化注册会强制 zh / en 的 key 域完全一致。
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'web-search-gongyy: dictionaries');
+  // **全部工作都放在 ctx.inject 回调里** —— 依赖没就绪就一行都不跑。
+  //
+  // ★ 这里踩过一次：词典注册原本写在 apply 顶层（回调之外），而 `locale` 没被声明进
+  //   inject，于是 apply 一开头就抛错，整个客户端半边**静默失效** —— 占位文字消失、
+  //   配置区不出现，而且因为不占用 boot 审计，连崩溃日志都没有。
+  //
+  //   规矩：**用到哪个服务就必须声明哪个**，而且所有服务访问都要在回调之内。
+  ctx.inject(['slots', 'configForms', 'locale'], (ctx) => {
+    // 词典：类型化注册会强制 zh / en 的 key 域完全一致。
+    ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'web-search-gongyy: dictionaries');
 
-  // 等 slots 与 configForms 就绪（子 fiber；父 entry 立即激活）。
-  ctx.inject(['slots', 'configForms'], (ctx) => {
     const t = ctx.locale.bind(NS);
 
     // 表单模型：scope 来自 configForms，按命名空间取。
