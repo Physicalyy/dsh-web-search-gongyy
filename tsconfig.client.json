@@ -8,7 +8,7 @@
   // 而 CommonJS 与那三种解析模式互斥（bundler 要求 module 为 preserve/es2015+，
   // node16/nodenext 会把 "type": "module" 包里的文件当 ESM）。
   //
-  // 所以保留 node10 解析 + CJS 产出，用 paths 把那三个子路径指到真实 .d.ts 上。
+  // 所以保留 node10 解析 + CJS 产出，用 paths 把那些子路径指到真实 .d.ts 上。
   // 新增客户端依赖且它也用 /client 子路径时，这里要补一行。
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -25,6 +25,9 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
+      "@deepseek-ai/dsh-client-locale/client": [
+        "node_modules/@deepseek-ai/dsh-client-locale/lib/types/client/index.d.ts"
+      ],
       "@deepseek-ai/dsh-client-ui-renderer/client": [
         "node_modules/@deepseek-ai/dsh-client-ui-renderer/lib/types/client/index.d.ts"
       ],
