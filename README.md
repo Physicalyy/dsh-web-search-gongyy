@@ -30,17 +30,19 @@ dsh 默认的 `deepseek-official` 通道**不是一个专用检索端点**：每
 
 前置条件：dsh ≥ `0.2.0-rc.2`，且 profile 的依赖管理用 pnpm。
 
-### 方式一：界面安装（推荐）
+### 只有界面一条路（`desktop` profile）
 
-侧栏 **插件** → **Add plugin** → 填入本仓库的**绝对路径**（或发布后的包名）→ 安装。
+侧栏 **插件** → **Add plugin** → 填入本仓库的**绝对路径**（或发布后的包名）→ 安装 → **重启 dsh**。
 
-### 方式二：命令行
-
-```sh
-npx -y @deepseek-ai/dsh plugin --profile desktop add <本仓库绝对路径>
-```
-
-本机 profile 是 `desktop`（`~/.dsh/profiles/desktop`）。装完需要重启 dsh。
+> **`desktop` profile 不能用命令行装。** 它由 Electron 应用独占管理，CLI 会直接拒绝：
+>
+> ```
+> error: profile "desktop" is managed exclusively by the Electron application
+> ```
+>
+> `npx -y @deepseek-ai/dsh plugin --profile <name> add ...` 只适用于非 desktop 的 profile（例如 `web`）。
+>
+> 重启是必须的：bundle 的组合层在**启动时**算出来。凭据则不需要重启（每次搜索都重新解析）。
 
 > **从本地源码安装前必须先构建。** `dist/` 被 gitignore，而包的 `main` 指向 `dist/index.js`：
 >
@@ -96,11 +98,9 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 
 ### 不泄露凭据地检查组合结果
 
-```sh
-npx -y @deepseek-ai/dsh --profile desktop --dump-config
-```
+`desktop` profile 不能用 CLI 检查（与安装同理，会被独占限制拒绝）。改看侧栏 **插件** 页：本插件的卡片与各行的状态都在那里；**Settings → Built-in plugins** 是只读清单。
 
-输出里只应看到凭据引用的**名字**，不应出现 Key 的字面值。
+凭据文件 `~/.dsh/.credentials.yaml` 里是**明文** Key，查看时注意不要外传。
 
 ## 验证
 
@@ -117,9 +117,7 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 
 ## 卸载
 
-```sh
-npx -y @deepseek-ai/dsh plugin --profile desktop remove dsh-web-search-gongyy
-```
+在侧栏 **插件** → **Installed** 里找到 `dsh-web-search-gongyy` 并卸载（也可以先关掉它那一行的开关做临时停用），然后**重启 dsh**。
 
 卸载后 web 搜索**自动回落到** dsh-base 的 `deepseek-official`，无需手改 profile。
 
