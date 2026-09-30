@@ -126,7 +126,7 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 ## 已知限制
 
 - **只有搜索，没有抓取。** 本版本不注册 fetch provider，也不改 `fetchProvider`，所以 `web_fetch` 保持原样由组合层提供。
-- **没有配置界面。** 配置走 `cordis.patch.yml`，凭据走凭据文件或环境变量。客户端配置卡片是后续工作。
+- **配置界面在插件页。** 侧栏 **插件** → `dsh-web-search-gongyy` 的详情页可以改引擎顺序、结果数上限和两个凭据引用名。**API Key 本身仍然走凭据域**（卡片只改引用名），也可以继续用手编 `cordis.patch.yml` 的方式。
 - **单引擎单 Key。** 同一引擎不支持多 Key 轮换。
 - **搜索参数只有 query 和 maxResults。** 这是 seam 的限制（时效性、域名过滤、地区等 provider 中立参数上游尚未定义），不是本插件偷懒。
 - **超时由工具层负责。** `dsh-tool-web` 的 `searchTimeoutMs`（默认 30s）会通过 `signal` 取消本次搜索，插件不自带超时。
