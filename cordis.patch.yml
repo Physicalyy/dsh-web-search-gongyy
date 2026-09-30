@@ -1,23 +1,30 @@
 # dsh bundle patch for dsh-web-search-gongyy.
 #
 # 作为 profile layer 按 dsh.profile.bundles 顺序应用；后一层按 entry id 覆盖前一层，
-# 所以下面的 `web` 重指会盖过 dsh-base 钉死的 `searchProvider: deepseek-official`。
-# 装上本插件即接管 web 搜索；卸载时这一层随之消失，回落到底层路由，不需要手改 profile。
+# 所以下面的 `web` 重指会盖过 dsh-base 钉死的 `searchProvider: deepseek-official`
+# 与 `fetchProvider: http`。
+#
+# 装上本插件即接管 web 搜索与抓取；停用/卸载时这一层随之消失，回落到底层路由
+# （`deepseek-official` 与 `http`），不需要手改 profile。
 
 # 把宿主半边纳入运行组合。
 - insert:
     - id: web-search-gongyy
       name: 'dsh-web-search-gongyy'
 
-# 把 web seam 的搜索能力重指到本插件的 provider。
+# 把 web seam 的两种能力都重指到本插件的 provider。
 #
-# 为什么只重指 searchProvider：本插件只注册 search provider。若这里也写
-# fetchProvider: web-search-gongyy，seam 会在 fetch 时找不到该 id 并抛
-# WEB_PROVIDER_CONFIGURED_MISSING —— 等于把 web_fetch 弄坏。
-# 保持 fetchProvider 不变，web_fetch 继续由组合层原本的 provider 提供。
+# **一个 id 服务两种能力**：seam 的 search / fetch 是两个独立注册表
+# （registerSearchProvider / registerFetchProvider），同一个 id 两边都能注册
+# （官方实现里 ANYSEARCH_FETCH_PROVIDER_ID === ANYSEARCH_PROVIDER_ID）。
+#
+# 代价要知道：**接管 fetchProvider 会让所有 web_fetch 都改走引擎的 extract**。
+# 想只退抓取、不退搜索，就把下面的 fetchProvider 一行删掉 —— 那时 web_fetch
+# 回到 dsh-base 的 `http` provider，搜索仍走本插件，便于 A/B 对比。
 - id: web
   config:
     searchProvider: web-search-gongyy
+    fetchProvider: web-search-gongyy
 
 # tool-web 故意不在这里 patch。
 #

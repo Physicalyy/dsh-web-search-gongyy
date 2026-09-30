@@ -3,13 +3,13 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials';
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment';
 import z from '@deepseek-ai/schemastery';
-import { FallbackSearchProvider, PROVIDER_ID } from './provider.js';
+import { FallbackFetchProvider, FallbackSearchProvider, PROVIDER_ID } from './provider.js';
 import type { ProviderOptions } from './provider.js';
 import type { Engine } from './types.js';
 
-export { FallbackSearchProvider, PROVIDER_ID };
+export { FallbackFetchProvider, FallbackSearchProvider, PROVIDER_ID };
 export { ENGINES, engineById, knownEngineIds } from './engines/index.js';
-export type { Engine, EngineResult, EngineSource } from './types.js';
+export type { Engine, EngineFetchResult, EngineResult, EngineSource } from './types.js';
 
 /** Cordis loader 诊断用的插件名；同时是 `cordis.patch.yml` 里引用的 entry id。 */
 export const name = PROVIDER_ID;
@@ -151,7 +151,16 @@ function snapshotOptions(ctx: Context, config: ResolvedConfig): ProviderOptions 
   };
 }
 
-/** 注册聚合搜索 provider。 */
+/**
+ * 注册聚合的搜索与抓取 provider。
+ *
+ * **两个 provider 用同一个 id** —— seam 的 search / fetch 是两个独立注册表，
+ * 同一个 id 两边都能注册。这样 patch 里两行 `*Provider: web-search-gongyy` 就够。
+ *
+ * 两处都用 `() => snapshotOptions(...)` 这个 **thunk**：每次操作重新读配置，
+ * 所以改配置不需要重新注册 provider（也就不会让 seam 的选择抖动）。
+ */
 export function apply(ctx: Context, config: ResolvedConfig): void {
   ctx.web.registerSearchProvider(new FallbackSearchProvider(() => snapshotOptions(ctx, config)));
+  ctx.web.registerFetchProvider(new FallbackFetchProvider(() => snapshotOptions(ctx, config)));
 }

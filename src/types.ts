@@ -1,7 +1,7 @@
 /**
  * 引擎适配器的内部契约。
  *
- * 引擎保持"笨"：输入 query / key / limit，输出归一化后的 sources，失败抛普通 `Error`。
+ * 引擎保持"笨"：输入 query / key / limit（或 url），输出归一化结果，失败抛普通 `Error`。
  * fallback 顺序、`WebError` 错误码、取消语义全部归 aggregate provider —— 这样每个引擎
  * 都能脱离 seam 单独单测。
  */
@@ -21,7 +21,21 @@ export interface EngineResult {
   readonly sources: readonly EngineSource[];
 }
 
-/** 一个搜索后端。 */
+/** 一个引擎一次抓取的结果。 */
+export interface EngineFetchResult {
+  /**
+   * 清洗后的正文（markdown 或纯文本）。
+   *
+   * **空或纯空白视为抓取失败** —— 聚合层会继续尝试下一个引擎，而不是把空正文交给模型。
+   */
+  readonly content: string;
+  /** 该引擎自己是否截断了正文。 */
+  readonly truncated: boolean;
+  /** extract 报告的目标 URL；缺省时聚合层用请求 URL 兜底。 */
+  readonly url?: string;
+}
+
+/** 一个后端引擎。搜索是必备能力；抓取可选。 */
 export interface Engine {
   /** 稳定 id，同时是 `providerOrder` 里使用的值。 */
   readonly id: string;
@@ -46,4 +60,15 @@ export interface Engine {
     limit: number,
     signal?: AbortSignal,
   ): Promise<EngineResult>;
+  /**
+   * **可选的**抓取能力：取回一个 URL 的清洗正文。
+   *
+   * **缺省表示该引擎没有 extract 端点**（纯 SERP 引擎），**不进抓取链**。
+   *
+   * 这里用「方法缺省」而不是「`supportsFetch` 布尔 + 必然存在的方法」，是为了让调用点
+   * `if (engine.fetch === undefined) continue` 之后 TypeScript 能收窄 —— 不必再写一次断言。
+   *
+   * 实现约定与 `search` 相同：透传 `signal`、失败抛普通 `Error`、消息带引擎名与定位信息。
+   */
+  fetch?(url: string, apiKey: string, signal?: AbortSignal): Promise<EngineFetchResult>;
 }

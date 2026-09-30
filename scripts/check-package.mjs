@@ -102,9 +102,22 @@ if (typeof patchPath !== 'string' || patchPath.length === 0) {
         fail(`web.searchProvider 指向 "${pinned}"，但源码注册的是 "${providerId}"`);
       }
 
-      // fetchProvider 必须保持不动 —— 本插件不注册 fetch provider。
-      if (/^\s*fetchProvider:/m.test(patch)) {
-        fail(`${patchPath} 动了 fetchProvider，但本插件没有注册 fetch provider（会让 web_fetch 报 WEB_PROVIDER_CONFIGURED_MISSING）`);
+      // fetchProvider：**要么不动，要么配套注册 fetch provider**。
+      //
+      // 这条原先写的是「patch 里出现 fetchProvider 即失败」—— 那时本插件只有搜索能力，
+      // 改了会让 web_fetch 报 WEB_PROVIDER_CONFIGURED_MISSING。补上抓取后检查升级为：
+      // 改了就必须真的注册，否则同样是"接管了却没有能力"。
+      const fetchPinned = /^\s*fetchProvider:\s*(\S+)/m.exec(patch)?.[1];
+      if (fetchPinned !== undefined) {
+        if (fetchPinned !== providerId) {
+          fail(`web.fetchProvider 指向 "${fetchPinned}"，但本插件的 id 是 "${providerId}"`);
+        }
+        if (!/registerFetchProvider/.test(readText('src/index.ts'))) {
+          fail(
+            `${patchPath} 接管了 fetchProvider，但 src/index.ts 里没有 registerFetchProvider ` +
+              '—— web_fetch 会报 WEB_PROVIDER_CONFIGURED_MISSING',
+          );
+        }
       }
     }
   }

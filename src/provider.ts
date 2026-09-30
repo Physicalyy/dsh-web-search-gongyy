@@ -1,5 +1,12 @@
 import { WebError } from '@deepseek-ai/dsh-web';
-import type { WebSearchProvider, WebSearchRequest, WebSearchResult } from '@deepseek-ai/dsh-web';
+import type {
+  WebFetchProvider,
+  WebFetchRequest,
+  WebFetchResult,
+  WebSearchProvider,
+  WebSearchRequest,
+  WebSearchResult,
+} from '@deepseek-ai/dsh-web';
 import { engineById, knownEngineIds } from './engines/index.js';
 import type { Engine } from './types.js';
 
@@ -166,6 +173,140 @@ export class FallbackSearchProvider implements WebSearchProvider {
         const reason = describe(error);
         failures.push(`${id}: ${reason}`);
         options.warn(`web-search-gongyy: engine "${id}" failed: ${reason}; trying next`);
+      }
+    }
+
+    throw buildAllEnginesFailed(failures, attempted);
+  }
+}
+
+/** 只有 http / https 能抓 —— 其它协议（file:、ftp:、data: 等）直接判非法，不发请求。 */
+function assertFetchableUrl(raw: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch (error) {
+    throw new WebError(`invalid URL: ${raw}`, 'WEB_INVALID_URL', { cause: error });
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new WebError(
+      `unsupported URL scheme "${parsed.protocol}" (only http and https are allowed)`,
+      'WEB_INVALID_URL',
+    );
+  }
+}
+
+/**
+ * 把多个抓取引擎聚合成**一个** seam fetch provider。
+ *
+ * 与 {@link FallbackSearchProvider} 同构 —— 复用同一份配置快照、同一套取消纪律、
+ * 同一个错误聚合。**差异只有一处**：成功判据是**非空正文**，不是非空 sources。
+ *
+ * id 与搜索 provider **相同**：seam 的 search / fetch 是两个独立注册表，同一个 id
+ * 两边都能注册（官方实现同样是 `ANYSEARCH_FETCH_PROVIDER_ID === ANYSEARCH_PROVIDER_ID`）。
+ *
+ * 结果结构上的两个取舍（照参考实现）：
+ * - `statusCode` 固定 `200` —— extract 接口的成功投影**不含源站状态**，我们不能谎报一个
+ *   没拿到的状态码。这是"这次抓取成功了"的约定写法，不是对目标页面的断言。
+ * - `body.kind` 是 `'text'` —— extract 返回的是清洗后的 markdown，不是 HTML。
+ */
+export class FallbackFetchProvider implements WebFetchProvider {
+  readonly id = PROVIDER_ID;
+
+  private readonly snapshot: () => ProviderOptions;
+
+  constructor(snapshot: () => ProviderOptions) {
+    this.snapshot = snapshot;
+  }
+
+  /** 与搜索 provider 同一语义：表达"有意愿工作"，缺 Key 留到操作时以错误码暴露。 */
+  available(): boolean {
+    return this.snapshot().order.length > 0;
+  }
+
+  async fetch(request: WebFetchRequest, signal?: AbortSignal): Promise<WebFetchResult> {
+    // 协议校验放最前面：非法 URL 省掉一整轮引擎调用。
+    assertFetchableUrl(request.url);
+
+    const options = this.snapshot();
+
+    if (options.order.length === 0) {
+      throw new WebError(
+        'Web fetch is not configured: "providerOrder" is empty. ' +
+          'Set it to at least one engine that supports fetching, for example [anysearch, tavily].',
+        'WEB_PROVIDER_ERROR',
+      );
+    }
+
+    const failures: string[] = [];
+    let attempted = false;
+
+    for (const id of options.order) {
+      throwIfAborted(signal);
+
+      const engine = engineById(id);
+      if (engine === undefined) {
+        failures.push(`${id}: unknown engine (known engines: ${knownEngineIds().join(', ')})`);
+        options.warn(`web-search-gongyy: skipping unknown engine "${id}"`);
+        continue;
+      }
+
+      // 没有 extract 端点的引擎（纯 SERP）不进抓取链 —— 可选方法让这里直接收窄。
+      if (engine.fetch === undefined) {
+        failures.push(`${id}: does not support fetching`);
+        options.warn(`web-search-gongyy: engine "${id}" has no extract endpoint; skipped for fetch`);
+        continue;
+      }
+      const fetchFromEngine = engine.fetch.bind(engine);
+
+      let apiKey: string | undefined;
+      try {
+        apiKey = options.literalApiKey(engine) ?? (await options.resolveApiKey(engine, signal));
+      } catch (error) {
+        throwIfAborted(signal);
+        const reason = describe(error);
+        failures.push(`${id}: credential resolution failed (${reason})`);
+        options.warn(`web-search-gongyy: engine "${id}" credential resolution failed: ${reason}`);
+        continue;
+      }
+
+      if (engine.requiresApiKey && (apiKey === undefined || apiKey.length === 0)) {
+        failures.push(
+          `${id}: no API key (set ${engine.apiKeyEnv}, or use an engine that supports anonymous access)`,
+        );
+        options.warn(`web-search-gongyy: engine "${id}" needs ${engine.apiKeyEnv}; skipped`);
+        continue;
+      }
+
+      attempted = true;
+
+      try {
+        const result = await fetchFromEngine(request.url, apiKey ?? '', signal);
+
+        // 空/纯空白正文不算成功 —— 否则模型会收到一个空的"抓取结果"。
+        if (result.content.trim().length === 0) {
+          failures.push(`${id}: returned empty content`);
+          options.warn(`web-search-gongyy: engine "${id}" returned empty content; trying next`);
+          continue;
+        }
+
+        if (failures.length > 0) {
+          options.warn(
+            `web-search-gongyy: fell back to engine "${id}" for fetch after ${failures.length} failure(s): ${failures.join('; ')}`,
+          );
+        }
+
+        return {
+          url: result.url ?? request.url,
+          statusCode: 200,
+          body: { kind: 'text', content: result.content },
+          truncated: result.truncated,
+        };
+      } catch (error) {
+        throwIfAborted(signal);
+        const reason = describe(error);
+        failures.push(`${id}: ${reason}`);
+        options.warn(`web-search-gongyy: engine "${id}" fetch failed: ${reason}; trying next`);
       }
     }
 

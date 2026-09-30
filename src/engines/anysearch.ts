@@ -1,8 +1,16 @@
-import type { Engine, EngineResult, EngineSource } from '../types.js';
+import type { Engine, EngineFetchResult, EngineResult, EngineSource } from '../types.js';
 import { asArray, asRecord, optionalString } from './fields.js';
 
 /** AnySearch 公开 API 基地址。 */
 const BASE_URL = 'https://api.anysearch.com';
+
+/**
+ * AnySearch extract 的正文上限（字符）。
+ *
+ * 取自参考实现的实测值。**API 自己不报截断标志**，所以只能用「正文长度恰好达到上限」
+ * 作为启发式 —— 这是有损的判断，但比永远报 `truncated: false` 诚实。
+ */
+const EXTRACT_MAX_CHARACTERS = 50_000;
 
 /**
  * AnySearch 的响应信封。
@@ -23,17 +31,26 @@ function envelopeFailure(operation: string, envelope: Envelope): Error {
   return new Error(`AnySearch ${operation} failed: code=${code}, message=${message}`);
 }
 
+/** 带鉴权头（无 Key 时不带，走匿名额度）。 */
+function jsonHeaders(apiKey: string): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    ...(apiKey.length > 0 ? { authorization: `Bearer ${apiKey}` } : {}),
+  };
+}
+
 /**
  * AnySearch 引擎。
  *
- * 三个实现要点：
+ * 四个实现要点：
  *
  * 1. **必须判信封的 `code === 0`。** 只判 `res.ok` 会把服务端错误（额度用尽、参数
  *    非法等）当成成功，返回空结果，从而**直接中断整条 fallback 链** —— 用户看到的是
- *    "搜不到东西"，而不是"引擎 A 挂了、已切到引擎 B"。
+ *    "搜不到东西"，而不是"引擎 A 挂了、已切到引擎 B"。搜索与抓取两端同样适用。
  * 2. **支持匿名。** `requiresApiKey: false`；Key 为空时不带 `Authorization` 头，
  *    走服务端匿名额度。官方实现对此的注释是 `Missing values use anonymous access.`
  * 3. **没有日期字段。** AnySearch 不返回 `publishedAt`，所以永远不设置它。
+ * 4. **extract 返回的是清洗后的 markdown**，不是 HTML。
  */
 export const anysearchEngine: Engine = {
   id: 'anysearch',
@@ -43,10 +60,7 @@ export const anysearchEngine: Engine = {
   async search(query, apiKey, limit, signal): Promise<EngineResult> {
     const response = await fetch(`${BASE_URL}/v1/search`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(apiKey.length > 0 ? { authorization: `Bearer ${apiKey}` } : {}),
-      },
+      headers: jsonHeaders(apiKey),
       body: JSON.stringify({ query, max_results: limit }),
       ...(signal === undefined ? {} : { signal }),
     });
@@ -80,5 +94,37 @@ export const anysearchEngine: Engine = {
     }
 
     return { sources };
+  },
+
+  /**
+   * 抓取一个 URL 的清洗正文：`POST /v1/extract`，取 `data.content`。
+   *
+   * 与搜索同样要判信封 —— extract 的 HTTP 200 也可能是业务失败。
+   */
+  async fetch(url, apiKey, signal): Promise<EngineFetchResult> {
+    const response = await fetch(`${BASE_URL}/v1/extract`, {
+      method: 'POST',
+      headers: jsonHeaders(apiKey),
+      body: JSON.stringify({ url }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`AnySearch extract failed: HTTP ${response.status} ${response.statusText}`);
+    }
+
+    const envelope = (await response.json()) as Envelope;
+    if (envelope.code !== 0) throw envelopeFailure('extract', envelope);
+
+    const data = asRecord(envelope.data);
+    const content = optionalString(data?.['content']) ?? '';
+    // extract 可能报告目标 URL（重定向后的）；缺省时让聚合层用请求 URL 兜底。
+    const reported = optionalString(data?.['url']);
+
+    return {
+      content,
+      truncated: content.length >= EXTRACT_MAX_CHARACTERS,
+      ...(reported === undefined ? {} : { url: reported }),
+    };
   },
 };

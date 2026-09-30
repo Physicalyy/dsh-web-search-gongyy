@@ -23,7 +23,7 @@ beforeEach(() => {
 
 /** 记录被注册的 provider。 */
 function fakeContext({ credentials, launchEnvironment } = {}) {
-  const state = { registered: [] };
+  const state = { registered: [], registeredFetch: [] };
   const ctx = {
     // 注意 `launchEnvironmentOf(ctx)` 内部走的是 `ctx.get("launchEnvironment")`，
     // 不是读 `ctx.launchEnvironment` —— 桩必须按前者来。
@@ -34,8 +34,14 @@ function fakeContext({ credentials, launchEnvironment } = {}) {
     },
     logger: () => ({ warn() {}, info() {}, error() {}, debug() {} }),
     web: {
+      // 两个注册表分开记录 —— seam 的 search / fetch 是两个独立注册表，
+      // 同一个 id 两边都能注册（本项目正是这么用的）。
       registerSearchProvider: (provider) => {
         state.registered.push(provider);
+        return () => {};
+      },
+      registerFetchProvider: (provider) => {
+        state.registeredFetch.push(provider);
         return () => {};
       },
     },
@@ -89,8 +95,15 @@ describe('apply()', () => {
     const { ctx, state } = fakeContext();
     apply(ctx, fakeConfig());
 
-    assert.equal(state.registered.length, 1, '必须只注册一个 provider');
+    assert.equal(state.registered.length, 1, '必须只注册一个 search provider');
     assert.equal(state.registered[0].id, PROVIDER_ID);
+    assert.equal(state.registered[0].available(), true);
+
+    // 抓取是**另一个注册表**，且复用同一个 id —— seam 的 search / fetch 相互独立，
+    // 所以一个 id 能服务两种能力（patch 里两行 `*Provider: web-search-gongyy` 就够）。
+    assert.equal(state.registeredFetch.length, 1, '必须只注册一个 fetch provider');
+    assert.equal(state.registeredFetch[0].id, PROVIDER_ID, '两种能力复用同一个 id');
+    assert.equal(state.registeredFetch[0].available(), true);
     assert.equal(state.registered[0].available(), true);
   });
 
