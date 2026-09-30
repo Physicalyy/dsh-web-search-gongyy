@@ -110,6 +110,44 @@ if (typeof patchPath !== 'string' || patchPath.length === 0) {
   }
 }
 
+// ── 5. 客户端半边声明 ──────────────────────────────────────────────────────
+// 这一整段来自一次真实事故：客户端插件的顶层 inject 写成了包名，导致 entry 永久
+// pending、Web boot 致命失败，用户的整个界面起不来。
+//   web boot: 1 entry did not activate
+//   dsh-web-search-gongyy: pending (waiting for service: @deepseek-ai/dsh-client-ui-plugin-manager)
+const clientDecl = pkg.dsh?.client;
+
+if (clientDecl !== undefined) {
+  if (clientDecl.platform !== 'web') {
+    fail(`dsh.client.platform 必须是 "web"，现在是 ${JSON.stringify(clientDecl.platform)}`);
+  }
+  if (pkg.exports?.['./client'] === undefined) {
+    fail('声明了 dsh.client 却没有 exports["./client"] —— 浏览器半边加载不到');
+  }
+  if (!existsSync(join(ROOT, 'src', 'client.tsx'))) {
+    fail('声明了 dsh.client 却找不到 src/client.tsx');
+  }
+
+  // 顶层 inject 里必须是**服务名**，不能是**包名**。
+  // 判据：服务名不会以 "@" 开头（那三个服务是 slots / locale / remote / configForms），
+  // 而包名几乎总是 "@scope/name"。
+  const injectMatch = /export\s+const\s+inject\s*=\s*\[([^\]]*)\]/.exec(readText('src/client.tsx'));
+  if (injectMatch !== null) {
+    const entries = [...injectMatch[1].matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+    const packageLike = entries.filter((entry) => entry.startsWith('@') || entry.includes('/'));
+    if (packageLike.length > 0) {
+      fail(
+        '客户端顶层 inject 里出现了包名 —— 它要的是 **cordis 服务名**：\n' +
+          packageLike.map((entry) => `      ${entry}`).join('\n') +
+          '\n    写包名会让 entry 永久 pending，Web boot 直接失败。\n' +
+          '    包依赖请写进 package.json 的 dsh.client.inject。',
+      );
+    } else {
+      notes.push(`客户端顶层 inject: ${JSON.stringify(entries)}`);
+    }
+  }
+}
+
 // ── 结果 ───────────────────────────────────────────────────────────────────
 for (const note of notes) console.log(`  ok  ${note}`);
 

@@ -24,23 +24,49 @@ export const NS = 'web-search-gongyy';
 /** Cordis loader 诊断用的插件名。 */
 export const name = NS;
 
-/** cordis 服务依赖：要用插件页声明的 `plugins.*` 插槽。 */
-export const inject = ['@deepseek-ai/dsh-client-ui-plugin-manager'];
-
+/**
+ * 刻意**不导出顶层 `inject`**。
+ *
+ * ## 为什么 —— 这是一次真实事故的修复
+ *
+ * 顶层 `inject` 里写的是 **cordis 服务名**，不是包名。我一开始写成了包名
+ * `'@deepseek-ai/dsh-client-ui-plugin-manager'`，于是 cordis 永远在等一个不存在的服务，
+ * entry 永久 pending，Web boot **致命失败**，整个界面起不来：
+ *
+ *     web boot: 1 entry did not activate
+ *     dsh-web-search-gongyy: pending (waiting for service: @deepseek-ai/dsh-client-ui-plugin-manager)
+ *
+ * ## 现在的做法
+ *
+ * 改用 `ctx.inject([...], cb)` —— 它创建**子 fiber** 去等依赖，**父 entry 本体立即激活**。
+ * 依赖缺失的后果因此从"整个 Web 起不来"降级为"我们的配置区不出现"。
+ *
+ * 对第三方插件这个取舍是明确的：**我们没有资格让宿主启动失败。**
+ *
+ * ## 两个 inject 别搞混
+ *
+ * | 位置 | 写什么 | 例子 |
+ * | --- | --- | --- |
+ * | `package.json` 的 `dsh.client.inject` | **包名**（模块工厂到达顺序 + 组合边） | `@deepseek-ai/dsh-client-ui-plugin-manager` |
+ * | 本文件导出的 `inject` | **服务名** | `["slots", "locale", "remote", "configForms"]` |
+ */
 export function apply(ctx: Context): void {
-  ctx.effect(() =>
-    ctx.slots.inject('plugins.bundle.config', () =>
-      ctx.slots.register(
-        {
-          name: 'plugins.bundle.config',
-          // 按 npm 包名分发 —— 插件页用 entryKey: pkg.name 匹配。
-          key: 'dsh-web-search-gongyy',
-          // 暂不传 locale：它的类型是**受约束的字面量联合**，当前只接受插件页自己的
-          // "pluginManager"。要用自己的词典，得先对 locale 命名空间做 declare-module
-          // 增强（官方各插件就是这么做的）。留到表单阶段和 i18n 一起做。
-        },
-        () => <p>dsh-web-search-gongyy</p>,
+  // 只依赖 slots（由 dsh-client-ui-renderer 挂到 Context 上）。
+  ctx.inject(['slots'], (ctx) => {
+    ctx.effect(() =>
+      ctx.slots.inject('plugins.bundle.config', () =>
+        ctx.slots.register(
+          {
+            name: 'plugins.bundle.config',
+            // 按 npm 包名分发 —— 插件页用 entryKey: pkg.name 匹配。
+            key: 'dsh-web-search-gongyy',
+            // 暂不传 locale：它的类型是**受约束的字面量联合**，当前只接受插件页自己的
+            // "pluginManager"。要用自己的词典，得先对 locale 命名空间做 declare-module
+            // 增强（官方各插件就是这么做的）。留到表单阶段和 i18n 一起做。
+          },
+          () => <p>dsh-web-search-gongyy</p>,
+        ),
       ),
-    ),
-  );
+    );
+  });
 }
