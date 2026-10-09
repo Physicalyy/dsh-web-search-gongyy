@@ -66,6 +66,8 @@ const zh = {
   anysearchKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。AnySearch 支持匿名，留空即可。',
   tavilyKeyLabel: 'Tavily API Key',
   tavilyKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。',
+  keyReadOnlyHint:
+    '这个引用由启动 dsh 的**环境变量**提供（只读）：在这里写会被它遮蔽，所以宿主拒绝了编辑。想在这里改，就先在启动 dsh 的环境里去掉那个变量。',
   keySet: '已设置',
   keyUnset: '未设置',
   overridden: '已覆盖',
@@ -92,6 +94,8 @@ const en: Record<DictKey, string> = {
   anysearchKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file). AnySearch works anonymously — leave blank.',
   tavilyKeyLabel: 'Tavily API key',
   tavilyKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file).',
+  keyReadOnlyHint:
+    'This reference is supplied by the **environment variable** that launched dsh (read-only): a write here would be shadowed, so the Host refuses editing. To edit it here, remove that variable from the environment you start dsh with.',
   keySet: 'Configured',
   keyUnset: 'Not configured',
   overridden: 'Overridden',
@@ -195,7 +199,14 @@ interface CardState {
   readonly tavilyKey: SettingsFieldState;
   readonly anysearchConfigured: boolean;
   readonly tavilyConfigured: boolean;
-  readonly keysWritable: boolean;
+  /**
+   * **逐个凭据**判断能不能写。
+   *
+   * 不能共用一个布尔值：宿主按引用分别回答 `writable`，而"由启动环境变量提供"的引用是只读的
+   * （写入会被环境遮蔽），另一个引用可能完全可写。共用一个值会把可写的那个也一起禁掉。
+   */
+  readonly anysearchWritable: boolean;
+  readonly tavilyWritable: boolean;
 }
 
 /**
@@ -326,20 +337,20 @@ function ConfigCard(props: CardProps) {
         t,
         id: 'wsg-anysearch-key',
         label: t('anysearchKeyLabel'),
-        hint: t('anysearchKeyHint'),
+        hint: t(state.anysearchWritable ? 'anysearchKeyHint' : 'keyReadOnlyHint'),
         state: state.anysearchKey,
         configured: state.anysearchConfigured,
-        disabled: disabled || !state.keysWritable,
+        disabled: disabled || !state.anysearchWritable,
         onEdit: (text) => props.edit(KEY_FIELD.anysearch, text),
       })}
       {secretField({
         t,
         id: 'wsg-tavily-key',
         label: t('tavilyKeyLabel'),
-        hint: t('tavilyKeyHint'),
+        hint: t(state.tavilyWritable ? 'tavilyKeyHint' : 'keyReadOnlyHint'),
         state: state.tavilyKey,
         configured: state.tavilyConfigured,
-        disabled: disabled || !state.keysWritable,
+        disabled: disabled || !state.tavilyWritable,
         onEdit: (text) => props.edit(KEY_FIELD.tavily, text),
       })}
     </SettingsForm>
@@ -401,7 +412,8 @@ export function apply(ctx: Context): void {
         tavilyKey: keys.get('tavily') ?? model.field(KEY_FIELD.tavily),
         anysearchConfigured: credentials.anysearch.configured,
         tavilyConfigured: credentials.tavily.configured,
-        keysWritable: credentials.anysearch.writable && credentials.tavily.writable,
+        anysearchWritable: credentials.anysearch.writable,
+        tavilyWritable: credentials.tavily.writable,
       };
     }
 

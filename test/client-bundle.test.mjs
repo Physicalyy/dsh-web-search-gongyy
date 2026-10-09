@@ -436,6 +436,27 @@ describe('客户端 bundle', () => {
     assert.equal(specs.tavilyApiKeyEnv, undefined);
   });
 
+  it('可写性**逐字段**判断：一个引用只读不该把另一个也禁掉（界面踩过一次）', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, calls, credentials } = fakeContext();
+
+    // 真实场景：TAVILY_API_KEY 由启动环境变量提供（宿主报 writable:false），
+    // 而 ANYSEARCH_API_KEY 来自凭据文件（可写）。共用一个布尔值会把后者一起禁掉。
+    credentials.views.TAVILY_API_KEY = { configured: true, writable: false };
+    credentials.views.ANYSEARCH_API_KEY = { configured: true, writable: true };
+
+    exports.apply(ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const injected = calls.find((call) => call.kind === 'slots.register')?.options?.inject?.();
+    const state = injected.hooks.webSearchConfig.getSnapshot();
+
+    assert.equal(state.tavilyWritable, false, '环境变量提供的引用是只读的');
+    assert.equal(state.anysearchWritable, true, '另一个引用可写，不该被连带禁掉');
+  });
+
   it('apply() 在没有这些服务时不该抛错（失败模式必须是降级而非崩溃）', () => {
     const exports = loadBundle().factory((spec) => platformRequire(spec, stubPrimitives()));
     const ctx = {
