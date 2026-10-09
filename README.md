@@ -32,10 +32,15 @@ dsh 默认的 `deepseek-official` 通道**不是一个专用检索端点**：每
 Tavily `/extract`），模型拿到的是**清洗后的正文**，而不是"抓到什么算什么"的裸 HTML 转换结果。
 
 - fallback 逻辑与搜索完全一致，同样受 `providerOrder` 控制
-- **本机 / 内网地址抓不到** —— extract 服务在公网，`http://127.0.0.1/...` 这类地址会失败
-- 抽取质量因站点与引擎而异（例：AnySearch 抓 baidu 首页会返回一大段 `<style>` CSS，Tavily 返回页面 markdown）
+- **大页面明显更全**：官方 `http` provider 会把 HTML 先截到 10 万字符再转 markdown，所以重页面丢内容 ——
+  实测 Wikipedia 官方 30494 字符 vs 本插件 144694 字符；GitHub 仓库页 3690 vs 15691
+- **门户页从"空"变成"有"**：baidu 首页在官方路径下 turndown 之后是 **0 字符**（HTTP 200 但正文全空），
+  本插件能拿到真页面 markdown
+- 抽取质量因站点与引擎而异（同一页面 AnySearch 可能返回大段 `<style>` CSS，Tavily 返回页面 markdown；
+  默认顺序是"额度优先"：AnySearch 1000 次/天免费，Tavily 1000 credits/月）
+- 本机/内网地址**两边都抓不到**（官方 provider 也拒绝非公网地址，只是它立刻报 `WEB_BLOCKED_URL`）
 - 想**只退抓取、不退搜索**：删掉 `cordis.patch.yml` 里 `fetchProvider` 那一行，`web_fetch` 就回到
-  dsh-base 的 `http` provider，方便直接 A/B 对比
+  dsh-base 的 `http` provider，方便直接 A/B 对比（对照数据见 `.trellis/tasks/` 里的 ab-report）
 
 ## 安装
 
@@ -119,7 +124,8 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 
 再让它抓一个具体 URL（或直接把链接丢给它）。返回的应当是**清洗后的正文**；想确认这次抓取真的走了本插件，
 抓一个非法协议地址（如 `ftp://example.com/probe`）——报错文案 `unsupported URL scheme "ftp:"` 是本插件的原文。
-`http://127.0.0.1:...` 这类内网地址也可以：本插件的报错会点名 `anysearch` / `tavily` 两个引擎。
+用内网地址（`http://127.0.0.1:...`）当探针也行：官方 provider 报的是 `WEB_BLOCKED_URL`，
+本插件报的是点名 `anysearch` / `tavily` 的 `WEB_PROVIDER_ERROR`，一眼能区分是谁在处理。
 
 引擎发生 fallback 时会在 dsh 日志里留痕：
 
@@ -140,8 +146,10 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 
 ## 已知限制
 
-- **抓取走 extract 服务，不是裸 HTTP。** 好处是正文干净；代价是**本机/内网地址抓不到**（extract 服务在公网），
-  且抽取质量随站点与引擎而异。见上文「抓取」一节与 `.trellis/spec/plugin/architecture.md`。
+- **抓取走 extract 服务，不是裸 HTTP。** 好处是大页面/门户页的正文明显更全（实测 Wikipedia 4.7×、
+  GitHub 4.3×，baidu 从"空正文"变成有内容）；代价是**抽取质量随站点与引擎而异**，
+  且同样**抓不到非公网地址**（这一点官方 `http` provider 也一样）。
+  见上文「抓取」一节与 `.trellis/spec/plugin/architecture.md`。
 - **抓取没有单独开关。** `fetchProvider` 被 patch 钉死，把 `available()` 变假的后果是**报错**而不是让位；
   "只退抓取"的正确做法是删掉 patch 里 `fetchProvider` 那一行。
 - **配置界面在插件页。** 侧栏 **插件** → `dsh-web-search-gongyy` 的详情页可以改引擎顺序、结果数上限和两个凭据引用名。**API Key 本身仍然走凭据域**（卡片只改引用名），也可以继续用手编 `cordis.patch.yml` 的方式。
