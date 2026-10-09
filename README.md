@@ -36,11 +36,25 @@ Tavily `/extract`），模型拿到的是**清洗后的正文**，而不是"抓�
   实测 Wikipedia 官方 30494 字符 vs 本插件 144694 字符；GitHub 仓库页 3690 vs 15691
 - **门户页从"空"变成"有"**：baidu 首页在官方路径下 turndown 之后是 **0 字符**（HTTP 200 但正文全空），
   本插件能拿到真页面 markdown
-- 抽取质量因站点与引擎而异（同一页面 AnySearch 可能返回大段 `<style>` CSS，Tavily 返回页面 markdown；
-  默认顺序是"额度优先"：AnySearch 1000 次/天免费，Tavily 1000 credits/月）
-- 本机/内网地址**两边都抓不到**（官方 provider 也拒绝非公网地址，只是它立刻报 `WEB_BLOCKED_URL`）
+- **非正文会被跳过**：某些站点上引擎会吐出"不是正文的东西"（实测 AnySearch 抓 baidu 首页给 5 万字符
+  `<style>` CSS），这类结果**判为低质并继续 fallback**，不会塞给模型；只有所有引擎都给不出正文时才
+  退回首份并留日志。判据与阈值来自 11 个真实页面的标定，JSON/源码/纯文本/极短页都不会被误伤
+- 默认顺序是"**额度优先**"：AnySearch 1000 次/天免费（可匿名），Tavily 1000 credits/月。
+  想质量优先就改 `providerOrder`，代价是烧 Tavily 的月额度
+- 本机/内网地址**两边都抓不到**（官方 provider 也拒绝非公网地址），且本插件会**立刻**报
+  `WEB_BLOCKED_URL` —— 这类失败与"谁去抓"无关，不会白跑后面的引擎
 - 想**只退抓取、不退搜索**：删掉 `cordis.patch.yml` 里 `fetchProvider` 那一行，`web_fetch` 就回到
   dsh-base 的 `http` provider，方便直接 A/B 对比（对照数据见 `.trellis/tasks/` 里的 ab-report）
+
+抓取失败时给的是**可路由的错误码 + 上游原话**，例：
+
+```
+WEB_BLOCKED_URL  Web fetch was blocked for this URL — tavily: … (upstream: Validation Error: Invalid URL format). …
+WEB_FETCH_TIMEOUT / WEB_ABORTED / WEB_INVALID_URL / WEB_PROVIDER_ERROR
+```
+
+> 两个引擎的上游错误词汇比想象中少：AnySearch 对"主机不存在 / PDF / 404 / 反爬"回的是**同一句**
+> `422 · error_code=extract_failed`，所以我们**不编造**它给不出的码（如"内容过大""类型不支持"）。
 
 ## 安装
 
@@ -123,18 +137,23 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 重启 dsh 后，在对话里让它搜索（"搜一下今天的新闻"）。应当返回带 URL 的 sources。
 
 再让它抓一个具体 URL（或直接把链接丢给它）。返回的应当是**清洗后的正文**；想确认这次抓取真的走了本插件，
-抓一个非法协议地址（如 `ftp://example.com/probe`）——报错文案 `unsupported URL scheme "ftp:"` 是本插件的原文。
-用内网地址（`http://127.0.0.1:...`）当探针也行：官方 provider 报的是 `WEB_BLOCKED_URL`，
-本插件报的是点名 `anysearch` / `tavily` 的 `WEB_PROVIDER_ERROR`，一眼能区分是谁在处理。
+最可靠的是抓一个**非法协议**地址（如 `ftp://example.com/probe`）——报错文案 `unsupported URL scheme "ftp:"`
+是本插件的本地校验原文（0ms 就拒，不联网）。
 
-引擎发生 fallback 时会在 dsh 日志里留痕：
+用内网地址（`http://127.0.0.1:...`）也能探，但要**看消息而不是看错误码**：现在两边都报 `WEB_BLOCKED_URL`
+（本插件刻意与官方对齐）。区别在文案 —— 本插件会点名 `anysearch` / `tavily`、带出上游原话，
+并说明 "remaining engines were not tried"；官方那条只有一句地址被拒。
+
+引擎发生 fallback（含"判为低质"）时会在 dsh 日志里留痕：
 
 ```
 web-search-gongyy: engine "anysearch" failed: ...; trying next
+web-search-gongyy: engine "anysearch" returned non-prose content (starts with a style/script tag; braces+semicolons 47.1/1k, quotes 0.4/1k); trying next
 web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 ```
 
-**这条日志很重要**：没有它，首选引擎悄悄坏掉（额度用尽、接口变更）时你完全不会察觉，只会一直烧后面引擎的额度。
+**这条日志很重要**：没有它，首选引擎悄悄坏掉（额度用尽、接口变更、开始返垃圾）时你完全不会察觉，
+只会一直烧后面引擎的额度。
 
 ## 卸载
 
@@ -147,7 +166,8 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 ## 已知限制
 
 - **抓取走 extract 服务，不是裸 HTTP。** 好处是大页面/门户页的正文明显更全（实测 Wikipedia 4.7×、
-  GitHub 4.3×，baidu 从"空正文"变成有内容）；代价是**抽取质量随站点与引擎而异**，
+  GitHub 4.3×，baidu 从"空正文"变成有内容）；代价是**抽取质量随站点与引擎而异** ——
+  我们只能靠"判为非正文就继续 fallback"来兜（会多跑一个引擎、多烧一次额度），
   且同样**抓不到非公网地址**（这一点官方 `http` provider 也一样）。
   见上文「抓取」一节与 `.trellis/spec/plugin/architecture.md`。
 - **抓取没有单独开关。** `fetchProvider` 被 patch 钉死，把 `available()` 变假的后果是**报错**而不是让位；
@@ -156,6 +176,7 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 - **单引擎单 Key。** 同一引擎不支持多 Key 轮换。
 - **搜索参数只有 query 和 maxResults。** 这是 seam 的限制（时效性、域名过滤、地区等 provider 中立参数上游尚未定义），不是本插件偷懒。
 - **超时由工具层负责。** `dsh-tool-web` 的 `searchTimeoutMs`（默认 30s）会通过 `signal` 取消本次搜索，插件不自带超时。
+  抓取侧会把**超时与取消分开报**：`AbortSignal.timeout()` 到点 → `WEB_FETCH_TIMEOUT`，调用方主动取消 → `WEB_ABORTED`。
 
 ## 开发
 
