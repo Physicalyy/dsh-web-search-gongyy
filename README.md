@@ -126,8 +126,10 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 | --- | --- | --- |
 | `providerOrder` | `[anysearch, tavily]` | 引擎调用顺序；靠前的先调，失败自动落到下一个 |
 | `maxResultsPerEngine` | `8` | 调用方没给 `maxResults` 时，每个引擎默认请求多少条 |
-| `anysearchApiKeyEnv` / `tavilyApiKeyEnv` | `ANYSEARCH_API_KEY` / `TAVILY_API_KEY` | 凭据引用名 |
-| `anysearchApiKey` / `tavilyApiKey` | 空 | 字面 Key，优先级高于凭据引用 |
+| `anysearchApiKeyEnv` / `tavilyApiKeyEnv` | `ANYSEARCH_API_KEY` / `TAVILY_API_KEY` | 凭据引用名 —— **卡片上不显示**（默认值够用）；它决定卡片里那个 Key 存到哪个名字下，要改名就手改这里 |
+| `anysearchApiKey` / `tavilyApiKey` | 空 | 字面 Key，优先级高于凭据引用。**卡片刻意不暴露它**（会落进配置文件），只留作本地调试 |
+
+卡片上能改的是：引擎顺序、结果数上限，以及**两个 API Key**（Key 直接粘，写进凭据域）。
 
 `providerOrder` 里写错 id 不会让插件失效 —— 该 id 会被跳过并记进日志与错误信息。
 
@@ -177,7 +179,9 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
   见上文「抓取」一节与 `.trellis/spec/plugin/architecture.md`。
 - **抓取没有单独开关。** `fetchProvider` 被 patch 钉死，把 `available()` 变假的后果是**报错**而不是让位；
   "只退抓取"的正确做法是删掉 patch 里 `fetchProvider` 那一行。
-- **配置界面在插件页。** 侧栏 **插件** → `dsh-web-search-gongyy` 的详情页可以改引擎顺序、结果数上限和两个凭据引用名。**API Key 本身仍然走凭据域**（卡片只改引用名），也可以继续用手编 `cordis.patch.yml` 的方式。
+- **配置界面在插件页。** 侧栏 **插件** → `dsh-web-search-gongyy` 的详情页可以改**引擎顺序、结果数上限，
+  以及直接粘两个 API Key**（Key 写进凭据域，不落配置文件；界面只显示"已设置/未设置"）。
+  凭据引用名与配置的字面 Key 走手编 `cordis.patch.yml` 的方式。
 - **单引擎单 Key。** 同一引擎不支持多 Key 轮换。
 - **搜索参数只有 query 和 maxResults。** 这是 seam 的限制（时效性、域名过滤、地区等 provider 中立参数上游尚未定义），不是本插件偷懒。
 - **超时由工具层负责。** `dsh-tool-web` 的 `searchTimeoutMs`（默认 30s）会通过 `signal` 取消本次搜索，插件不自带超时。

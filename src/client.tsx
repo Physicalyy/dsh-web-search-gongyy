@@ -55,7 +55,7 @@ export const name = NS;
 
 /** 本插件的词典。类型化注册强制双语平衡：两边 key 必须一一对应。 */
 const zh = {
-  description: '引擎调用顺序、结果数、API Key 与凭据引用名。',
+  description: '引擎调用顺序、结果数与 API Key。',
   orderLabel: '引擎调用顺序',
   orderHint: '逗号分隔，靠前的先调用。可选 anysearch、tavily。',
   orderInvalid: '只允许 anysearch / tavily，逗号分隔，且不能为空或重复',
@@ -68,11 +68,6 @@ const zh = {
   tavilyKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。',
   keySet: '已设置',
   keyUnset: '未设置',
-  anysearchEnvLabel: 'AnySearch 凭据引用名',
-  anysearchEnvHint: '上面那个 Key 存在这个名字下。改这里等于换一个存放位置。',
-  tavilyEnvLabel: 'Tavily 凭据引用名',
-  tavilyEnvHint: '上面那个 Key 存在这个名字下，例如 TAVILY_API_KEY。',
-  envInvalid: '必须是形如 ANYSEARCH_API_KEY 的环境变量名',
   overridden: '已覆盖',
   reset: '恢复默认',
   unavailable: '配置暂不可用。',
@@ -86,7 +81,7 @@ const zh = {
 type DictKey = keyof typeof zh;
 
 const en: Record<DictKey, string> = {
-  description: 'Engine order, result count, API keys, and credential reference names.',
+  description: 'Engine order, result count, and API keys.',
   orderLabel: 'Engine order',
   orderHint: 'Comma-separated; earlier engines are tried first. Allowed: anysearch, tavily.',
   orderInvalid: 'Only anysearch / tavily, comma-separated, no blanks or duplicates',
@@ -99,11 +94,6 @@ const en: Record<DictKey, string> = {
   tavilyKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file).',
   keySet: 'Configured',
   keyUnset: 'Not configured',
-  anysearchEnvLabel: 'AnySearch credential reference',
-  anysearchEnvHint: 'The name the key above is stored under. Change it to store the key somewhere else.',
-  tavilyEnvLabel: 'Tavily credential reference',
-  tavilyEnvHint: 'The name the key above is stored under, e.g. TAVILY_API_KEY.',
-  envInvalid: 'Must be an environment variable name such as ANYSEARCH_API_KEY',
   overridden: 'Overridden',
   reset: 'Reset to default',
   unavailable: 'Configuration is unavailable.',
@@ -184,27 +174,16 @@ const providerOrderSpec: SettingsFieldSpec = {
 };
 
 /**
- * 凭据引用名字段：必须是 POSIX 环境变量名。
+ * 卡片上的配置字段：顺序与结果数。
  *
- * 空草稿 = 清除（回落到默认值），与 `settingsTextField` 的语义一致。
+ * 凭据走 `SettingsSecretSpec`（见第 12.6 节）。原先还有两个"凭据引用名"字段，
+ * 用户反馈界面上不需要（默认值 `ANYSEARCH_API_KEY` / `TAVILY_API_KEY` 就够），已撤掉 ——
+ * 那两个仍是宿主 `Config` 的字段，手改 `cordis.patch.yml` 依然生效，而且 `refNameOf()`
+ * 就是读它们来决定 Key 存到哪个引用名下。
  */
-function credentialRefSpec(field: string): SettingsFieldSpec {
-  return {
-    field,
-    format: (value) => (typeof value === 'string' ? value : ''),
-    parse: (text) => {
-      const name = text.trim();
-      if (name.length === 0) return { kind: 'clear' };
-      return /^[A-Z][A-Z0-9_]*$/.test(name) ? { kind: 'set', value: name } : undefined;
-    },
-  };
-}
-
 const SPECS: SettingsFieldSpec[] = [
   providerOrderSpec,
   settingsNumberField('maxResultsPerEngine'),
-  credentialRefSpec('anysearchApiKeyEnv'),
-  credentialRefSpec('tavilyApiKeyEnv'),
 ];
 
 /** 卡片状态：框架态 + 每个控件的草稿态 + 两个凭据的"有没有配"。 */
@@ -214,8 +193,6 @@ interface CardState {
   readonly maxResults: SettingsFieldState;
   readonly anysearchKey: SettingsFieldState;
   readonly tavilyKey: SettingsFieldState;
-  readonly anysearchEnv: SettingsFieldState;
-  readonly tavilyEnv: SettingsFieldState;
   readonly anysearchConfigured: boolean;
   readonly tavilyConfigured: boolean;
   readonly keysWritable: boolean;
@@ -365,28 +342,6 @@ function ConfigCard(props: CardProps) {
         disabled: disabled || !state.keysWritable,
         onEdit: (text) => props.edit(KEY_FIELD.tavily, text),
       })}
-      {valueField({
-        t,
-        id: 'wsg-anysearch-env',
-        label: t('anysearchEnvLabel'),
-        hint: t('anysearchEnvHint'),
-        invalidLabel: t('envInvalid'),
-        state: state.anysearchEnv,
-        disabled,
-        onEdit: (text) => props.edit('anysearchApiKeyEnv', text),
-        onReset: () => props.resetField('anysearchApiKeyEnv'),
-      })}
-      {valueField({
-        t,
-        id: 'wsg-tavily-env',
-        label: t('tavilyEnvLabel'),
-        hint: t('tavilyEnvHint'),
-        invalidLabel: t('envInvalid'),
-        state: state.tavilyEnv,
-        disabled,
-        onEdit: (text) => props.edit('tavilyApiKeyEnv', text),
-        onReset: () => props.resetField('tavilyApiKeyEnv'),
-      })}
     </SettingsForm>
   );
 }
@@ -444,8 +399,6 @@ export function apply(ctx: Context): void {
         maxResults: model.field('maxResultsPerEngine'),
         anysearchKey: keys.get('anysearch') ?? model.field(KEY_FIELD.anysearch),
         tavilyKey: keys.get('tavily') ?? model.field(KEY_FIELD.tavily),
-        anysearchEnv: model.field('anysearchApiKeyEnv'),
-        tavilyEnv: model.field('tavilyApiKeyEnv'),
         anysearchConfigured: credentials.anysearch.configured,
         tavilyConfigured: credentials.tavily.configured,
         keysWritable: credentials.anysearch.writable && credentials.tavily.writable,

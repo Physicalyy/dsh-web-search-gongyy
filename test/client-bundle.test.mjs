@@ -315,18 +315,18 @@ describe('客户端 bundle', () => {
     assert.equal(registration?.locale, NS, '插槽文案走本插件自己的词典命名空间');
   });
 
-  it('表单模型接了四个配置字段 + 两个凭据控件（凭据控件不在 specs 里）', () => {
+  it('表单模型接了**两个配置字段** + 两个凭据控件（凭据控件不在 specs 里）', () => {
     const stub = stubPrimitives();
     const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
     const { ctx, calls } = fakeContext();
     exports.apply(ctx);
 
-    // 配置字段接线
+    // 配置字段接线：卡片只留"顺序 + 结果数"，引用名两个字段已按用户要求从界面撤掉
     const specs = stub.calls.constructed[0]?.specs;
     assert.deepEqual(
       specs?.map((spec) => spec.field),
-      ['providerOrder', 'maxResultsPerEngine', 'anysearchApiKeyEnv', 'tavilyApiKeyEnv'],
-      '四个配置字段都要挂上表单模型',
+      ['providerOrder', 'maxResultsPerEngine'],
+      '卡片上的配置字段只剩两个（引用名不再显示）',
     );
 
     // **凭据控件走第三个参数**：值写到 settings 之外（凭据域），所以不该出现在 specs 里。
@@ -375,7 +375,7 @@ describe('客户端 bundle', () => {
     assert.deepEqual(credentials.set, [{ ref: 'TAVILY_API_KEY', value: 'tvly-secret-value' }]);
   });
 
-  it('引用名改了之后，Key 控件的写入地址跟着改', async () => {
+  it('引用名被别处改了（例如手改 patch）之后，Key 控件的写入地址跟着改', async () => {
     const stub = stubPrimitives();
     const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
     const { ctx, credentials, setConfigValue } = fakeContext();
@@ -431,10 +431,9 @@ describe('客户端 bundle', () => {
     assert.equal(specs.providerOrder.parse('anysearch, google'), undefined, '未知引擎非法');
     assert.equal(specs.providerOrder.format(['tavily', 'anysearch']), 'tavily, anysearch');
 
-    // 凭据引用名
-    assert.deepEqual(specs.tavilyApiKeyEnv.parse('TAVILY_API_KEY'), { kind: 'set', value: 'TAVILY_API_KEY' });
-    assert.deepEqual(specs.tavilyApiKeyEnv.parse('   '), { kind: 'clear' }, '空草稿 = 清除，回落到默认值');
-    assert.equal(specs.tavilyApiKeyEnv.parse('tavily-key'), undefined, '不是环境变量名，非法');
+    // 凭据引用名不再是卡片字段（撤掉了）—— 断言它**没有**被挂上来，防止将来误加回来
+    assert.equal(specs.anysearchApiKeyEnv, undefined);
+    assert.equal(specs.tavilyApiKeyEnv, undefined);
   });
 
   it('apply() 在没有这些服务时不该抛错（失败模式必须是降级而非崩溃）', () => {
