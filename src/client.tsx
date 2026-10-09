@@ -25,15 +25,18 @@ import type { Context } from '@deepseek-ai/cordis';
 //   renderer/client        → ctx.slots（注意：不是 slots 包！）
 //   settings/client        → ctx.configForms
 //   plugin-manager/client  → plugins.* 插槽的 SlotMap 类型
+//   api-remotes/client     → ctx.remote 与它的 credentials 命名空间（写凭据域）
 import type {} from '@deepseek-ai/dsh-client-locale/client';
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client';
+import type {} from '@deepseek-ai/dsh-api-remotes/client';
 
 // 这些是**静态平台模块**（由壳的 PLATFORM_MODULES 提供），直接 require 即可，不用声明。
 import {
   SettingsForm,
   SettingsFormModel,
+  SettingsSecretField,
   SettingsValueField,
   settingsNumberField,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -41,6 +44,7 @@ import type {
   SettingsFieldSpec,
   SettingsFieldState,
   SettingsFormShell,
+  SettingsSecretSpec,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 
 /** 设置命名空间 = 本插件在 `cordis.patch.yml` 里的 entry id（不是包名）。 */
@@ -51,17 +55,23 @@ export const name = NS;
 
 /** 本插件的词典。类型化注册强制双语平衡：两边 key 必须一一对应。 */
 const zh = {
-  description: '引擎调用顺序、结果数与凭据引用名。',
+  description: '引擎调用顺序、结果数、API Key 与凭据引用名。',
   orderLabel: '引擎调用顺序',
   orderHint: '逗号分隔，靠前的先调用。可选 anysearch、tavily。',
   orderInvalid: '只允许 anysearch / tavily，逗号分隔，且不能为空或重复',
   maxResultsLabel: '每次搜索的结果数上限',
   maxResultsHint: '正整数。调用方未指定条数时使用。',
   maxResultsInvalid: '必须是正整数',
+  anysearchKeyLabel: 'AnySearch API Key',
+  anysearchKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。AnySearch 支持匿名，留空即可。',
+  tavilyKeyLabel: 'Tavily API Key',
+  tavilyKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。',
+  keySet: '已设置',
+  keyUnset: '未设置',
   anysearchEnvLabel: 'AnySearch 凭据引用名',
-  anysearchEnvHint: '环境变量名。AnySearch 支持匿名，留空即可。',
+  anysearchEnvHint: '上面那个 Key 存在这个名字下。改这里等于换一个存放位置。',
   tavilyEnvLabel: 'Tavily 凭据引用名',
-  tavilyEnvHint: '环境变量名，例如 TAVILY_API_KEY。',
+  tavilyEnvHint: '上面那个 Key 存在这个名字下，例如 TAVILY_API_KEY。',
   envInvalid: '必须是形如 ANYSEARCH_API_KEY 的环境变量名',
   overridden: '已覆盖',
   reset: '恢复默认',
@@ -76,17 +86,23 @@ const zh = {
 type DictKey = keyof typeof zh;
 
 const en: Record<DictKey, string> = {
-  description: 'Engine order, result count, and credential reference names.',
+  description: 'Engine order, result count, API keys, and credential reference names.',
   orderLabel: 'Engine order',
   orderHint: 'Comma-separated; earlier engines are tried first. Allowed: anysearch, tavily.',
   orderInvalid: 'Only anysearch / tavily, comma-separated, no blanks or duplicates',
   maxResultsLabel: 'Max results per engine',
   maxResultsHint: 'A positive integer. Used when the caller does not specify a count.',
   maxResultsInvalid: 'Must be a positive integer',
+  anysearchKeyLabel: 'AnySearch API key',
+  anysearchKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file). AnySearch works anonymously — leave blank.',
+  tavilyKeyLabel: 'Tavily API key',
+  tavilyKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file).',
+  keySet: 'Configured',
+  keyUnset: 'Not configured',
   anysearchEnvLabel: 'AnySearch credential reference',
-  anysearchEnvHint: 'An environment variable name. AnySearch works anonymously — leave blank.',
+  anysearchEnvHint: 'The name the key above is stored under. Change it to store the key somewhere else.',
   tavilyEnvLabel: 'Tavily credential reference',
-  tavilyEnvHint: 'An environment variable name, e.g. TAVILY_API_KEY.',
+  tavilyEnvHint: 'The name the key above is stored under, e.g. TAVILY_API_KEY.',
   envInvalid: 'Must be an environment variable name such as ANYSEARCH_API_KEY',
   overridden: 'Overridden',
   reset: 'Reset to default',
@@ -107,6 +123,41 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 /** 已实现的引擎 id，与宿主半边的 `src/engines/index.ts` 保持一致。 */
 const KNOWN_ENGINES = ['anysearch', 'tavily'];
+
+/** 两种凭据：卡片各给它们一个 Key 控件。 */
+type CredentialKind = 'anysearch' | 'tavily';
+
+const KINDS: readonly CredentialKind[] = ['anysearch', 'tavily'];
+
+/**
+ * 表单里 Key 控件的字段名。
+ *
+ * **刻意不叫 `anysearchApiKey`** —— 那个名字已经被**宿主配置里的字面量字段**占用
+ * （`Config` 的 `z.string().role('secret')`），而两者存储位置完全不同：字面量落配置文件，
+ * 本控件写凭据域。同名会让后来人把两者搞混，甚至互相覆盖。
+ */
+const KEY_FIELD: Record<CredentialKind, string> = {
+  anysearch: 'anysearchApiKeyCredential',
+  tavily: 'tavilyApiKeyCredential',
+};
+
+/** 每个凭据对应哪个"引用名"配置字段，以及缺省引用名（与宿主 Config 的 default 一致）。 */
+const ENV_FIELD: Record<CredentialKind, string> = {
+  anysearch: 'anysearchApiKeyEnv',
+  tavily: 'tavilyApiKeyEnv',
+};
+
+const DEFAULT_REF: Record<CredentialKind, string> = {
+  anysearch: 'ANYSEARCH_API_KEY',
+  tavily: 'TAVILY_API_KEY',
+};
+
+/** 凭据域只知道"有没有配"，值本身不会回传（见 primitives 对 SettingsSecretSpec 的说明）。 */
+interface CredentialState {
+  readonly ref: string;
+  readonly configured: boolean;
+  readonly writable: boolean;
+}
 
 /**
  * `providerOrder` 的字段规格。
@@ -156,24 +207,18 @@ const SPECS: SettingsFieldSpec[] = [
   credentialRefSpec('tavilyApiKeyEnv'),
 ];
 
-/** 卡片状态：框架态 + 每个控件的草稿态。 */
+/** 卡片状态：框架态 + 每个控件的草稿态 + 两个凭据的"有没有配"。 */
 interface CardState {
   readonly shell: SettingsFormShell;
   readonly order: SettingsFieldState;
   readonly maxResults: SettingsFieldState;
+  readonly anysearchKey: SettingsFieldState;
+  readonly tavilyKey: SettingsFieldState;
   readonly anysearchEnv: SettingsFieldState;
   readonly tavilyEnv: SettingsFieldState;
-}
-
-/** 从表单模型投影出卡片状态（scope 或草稿每次变化都会重建）。 */
-function projection(model: SettingsFormModel<Record<string, unknown>>): CardState {
-  return {
-    shell: model.shell(),
-    order: model.field('providerOrder'),
-    maxResults: model.field('maxResultsPerEngine'),
-    anysearchEnv: model.field('anysearchApiKeyEnv'),
-    tavilyEnv: model.field('tavilyApiKeyEnv'),
-  };
+  readonly anysearchConfigured: boolean;
+  readonly tavilyConfigured: boolean;
+  readonly keysWritable: boolean;
 }
 
 /**
@@ -192,7 +237,7 @@ interface CardProps {
   readonly discard: () => void;
 }
 
-/** 一个受控字段。抽出来只为少写四遍同样的 props。 */
+/** 一个受控字段。抽出来只为少写几遍同样的 props。 */
 function valueField(args: {
   t: CardProps['t'];
   id: string;
@@ -218,6 +263,36 @@ function valueField(args: {
       disabled={args.disabled}
       onEdit={args.onEdit}
       onReset={args.onReset}
+    />
+  );
+}
+
+/**
+ * 一个凭据控件：**只写不读**。
+ *
+ * 值不会随响应回流，所以草稿一开始是空的、界面只显示"有没有配"；空草稿保存不会写任何东西
+ * （因此不会把已存的 Key 清掉）。没有 reset —— "清除凭据"不是这里能表达的动作。
+ */
+function secretField(args: {
+  t: CardProps['t'];
+  id: string;
+  label: string;
+  hint: string;
+  state: SettingsFieldState;
+  configured: boolean;
+  disabled: boolean;
+  onEdit: (text: string) => void;
+}) {
+  return (
+    <SettingsSecretField
+      id={args.id}
+      label={args.label}
+      hint={args.hint}
+      text={args.state.text}
+      configured={args.configured}
+      stateLabel={args.t(args.configured ? 'keySet' : 'keyUnset')}
+      disabled={args.disabled}
+      onEdit={args.onEdit}
     />
   );
 }
@@ -270,6 +345,26 @@ function ConfigCard(props: CardProps) {
         onEdit: (text) => props.edit('maxResultsPerEngine', text),
         onReset: () => props.resetField('maxResultsPerEngine'),
       })}
+      {secretField({
+        t,
+        id: 'wsg-anysearch-key',
+        label: t('anysearchKeyLabel'),
+        hint: t('anysearchKeyHint'),
+        state: state.anysearchKey,
+        configured: state.anysearchConfigured,
+        disabled: disabled || !state.keysWritable,
+        onEdit: (text) => props.edit(KEY_FIELD.anysearch, text),
+      })}
+      {secretField({
+        t,
+        id: 'wsg-tavily-key',
+        label: t('tavilyKeyLabel'),
+        hint: t('tavilyKeyHint'),
+        state: state.tavilyKey,
+        configured: state.tavilyConfigured,
+        disabled: disabled || !state.keysWritable,
+        onEdit: (text) => props.edit(KEY_FIELD.tavily, text),
+      })}
       {valueField({
         t,
         id: 'wsg-anysearch-env',
@@ -309,17 +404,130 @@ export function apply(ctx: Context): void {
   //   配置区不出现，而且因为不占用 boot 审计，连崩溃日志都没有。
   //
   //   规矩：**用到哪个服务就必须声明哪个**，而且所有服务访问都要在回调之内。
-  ctx.inject(['slots', 'configForms', 'locale'], (ctx) => {
+  //
+  // `remote` / `remote.credentials` 是"直接填 Key"要用的：Key 不在 settings 里，
+  // 而是写进凭据域（`ctx.remote.credentials.set/describe`）。
+  ctx.inject(['slots', 'configForms', 'locale', 'remote', 'remote.credentials'], (ctx) => {
     // 词典：类型化注册会强制 zh / en 的 key 域完全一致。
     ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'web-search-gongyy: dictionaries');
 
     const t = ctx.locale.bind(NS);
 
     // 表单模型：scope 来自 configForms，按命名空间取。
-    const model = new SettingsFormModel<Record<string, unknown>>(ctx.configForms.get(NS), SPECS);
+    //
+    // **泛型要显式写出来**：`get<T>()` 的 T 以前是靠传给构造函数的上下文推断的，
+    // 一旦先存进局部变量，T 会退化成 `unknown`，于是 `snapshot.value?.[字段]` 直接报错。
+    const scope = ctx.configForms.get<Record<string, unknown>>(NS);
+
+    /** 凭据域只知道"有没有配"；值本身不会回传（见 primitives 的 SettingsSecretSpec 说明）。 */
+    const credentials: Record<CredentialKind, CredentialState> = {
+      anysearch: { ref: '', configured: false, writable: true },
+      tavily: { ref: '', configured: false, writable: true },
+    };
+
+    /** Key 控件当前的草稿（由表单模型持有），投影时读它。 */
+    const keys = new Map<CredentialKind, SettingsFieldState>();
+
+    /** 当前 Key 存在哪个引用名下：看配置里 `*ApiKeyEnv`，没配就用默认。 */
+    function refNameOf(kind: CredentialKind): string {
+      const value = scope.getSnapshot().value?.[ENV_FIELD[kind]];
+      return typeof value === 'string' && value.length > 0 ? value : DEFAULT_REF[kind];
+    }
+
+    /** 状态变更的发布口。在 store 建好之前是空操作（读取可能先于它完成）。 */
+    let publish: () => void = () => {};
+
+    function projection(): CardState {
+      return {
+        shell: model.shell(),
+        order: model.field('providerOrder'),
+        maxResults: model.field('maxResultsPerEngine'),
+        anysearchKey: keys.get('anysearch') ?? model.field(KEY_FIELD.anysearch),
+        tavilyKey: keys.get('tavily') ?? model.field(KEY_FIELD.tavily),
+        anysearchEnv: model.field('anysearchApiKeyEnv'),
+        tavilyEnv: model.field('tavilyApiKeyEnv'),
+        anysearchConfigured: credentials.anysearch.configured,
+        tavilyConfigured: credentials.tavily.configured,
+        keysWritable: credentials.anysearch.writable && credentials.tavily.writable,
+      };
+    }
+
+    /**
+     * 问凭据域：当前引用名下有没有 Key。
+     *
+     * **有个竞态要处理**：引用名可能在"发请求"与"收响应"之间被改。所以响应只在其 `ref`
+     * 仍等于当前引用名时才采用（官方实现里也点了这一条）。
+     */
+    async function readCredential(kind: CredentialKind): Promise<void> {
+      const ref = refNameOf(kind);
+      if (ref !== credentials[kind].ref) {
+        credentials[kind] = { ref, configured: false, writable: true };
+        publish();
+      }
+
+      const response = await ctx.remote.credentials.describe([ref]);
+      if (!response.ok) return;
+      if (ref !== refNameOf(kind)) return;
+
+      const view = response.value[ref];
+      const next: CredentialState = {
+        ref,
+        configured: view?.configured ?? false,
+        writable: view?.writable ?? true,
+      };
+      if (
+        next.configured === credentials[kind].configured &&
+        next.writable === credentials[kind].writable
+      ) {
+        return;
+      }
+
+      credentials[kind] = next;
+      publish();
+    }
+
+    /** 保存时把草稿写进凭据域。框架保证空草稿不会调到这里。 */
+    async function writeKey(kind: CredentialKind, text: string): Promise<boolean> {
+      await ctx.remote.credentials.set(refNameOf(kind), text);
+      await readCredential(kind);
+      return credentials[kind].configured;
+    }
+
+    /** 值写到 settings 之外的控件 —— 这是"直接填 Key"的机制。 */
+    const secretSpecs: SettingsSecretSpec[] = [
+      { field: KEY_FIELD.anysearch, write: (text) => writeKey('anysearch', text) },
+      { field: KEY_FIELD.tavily, write: (text) => writeKey('tavily', text) },
+    ];
+
+    const model = new SettingsFormModel<Record<string, unknown>>(scope, SPECS, secretSpecs);
     ctx.effect(() => () => model.dispose(), 'web-search-gongyy: form subscription');
 
-    const store = model.bind(() => projection(model));
+    for (const kind of KINDS) keys.set(kind, model.field(KEY_FIELD[kind]));
+
+    const store = model.bind(() => projection());
+    publish = () => store.set(projection());
+
+    // 引用名（或其它配置）变了 → Key 控件指向的引用名可能也变了，重读一次。
+    ctx.effect(
+      () =>
+        scope.subscribe(() => {
+          for (const kind of KINDS) void readCredential(kind);
+        }),
+      'web-search-gongyy: credential refresh on config change',
+    );
+
+    // 别处（例如 Models 页）改了同一个引用，徽标要跟着变。
+    ctx.effect(
+      () =>
+        ctx.remote.$on('credentials/reference-updated', (ref: string) => {
+          for (const kind of KINDS) {
+            if (ref === refNameOf(kind)) void readCredential(kind);
+          }
+        }),
+      'web-search-gongyy: credential refresh on host event',
+    );
+
+    for (const kind of KINDS) void readCredential(kind);
 
     ctx.effect(
       () =>

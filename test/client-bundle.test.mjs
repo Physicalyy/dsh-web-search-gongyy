@@ -42,7 +42,7 @@ function loadBundle() {
 
 /** `ui-primitives` 的桩：记录表单模型的构造与绑定，供断言检查字段接线。 */
 function stubPrimitives() {
-  const calls = { constructed: [], bound: 0, disposed: 0 };
+  const calls = { constructed: [], bound: 0, disposed: 0, published: [] };
 
   class SettingsFormModel {
     constructor(scope, specs, secrets) {
@@ -56,7 +56,13 @@ function stubPrimitives() {
     }
     bind(project) {
       calls.bound += 1;
-      return { getSnapshot: project, subscribe: () => () => {} };
+      // 真实的 SnapshotStore 有 set（官方实现就靠它推送新状态）；桩必须照着实契约写，
+      // 否则插件里 `store.set(...)` 这类调用会在测试里静默变成 unhandled rejection。
+      return {
+        getSnapshot: project,
+        subscribe: () => () => {},
+        set: (state) => calls.published.push(state),
+      };
     }
     actions() {
       return { edit: () => {}, resetField: () => {}, save: () => {}, discard: () => {} };
@@ -110,6 +116,48 @@ function platformRequire(specifier, primitivesStub) {
  */
 function fakeContext() {
   const calls = [];
+  let declared = [];
+
+  /** 凭据域的调用记录与"Host 说配没配"的可控状态。 */
+  const credentials = { describe: [], set: [], views: {} };
+  /** `remote.$on` 注册的监听，按事件名存下来供测试触发。 */
+  const listeners = new Map();
+  /** 配置命名空间的当前快照，可由测试改写（模拟用户改了引用名）。 */
+  let snapshot = { value: undefined, writable: true, revision: 1 };
+  let scopeListener = () => {};
+
+  const credentialsImpl = {
+    describe: async (refs) => {
+      credentials.describe.push(refs);
+      return {
+        ok: true,
+        value: Object.fromEntries(
+          refs.map((ref) => [ref, credentials.views[ref] ?? { configured: false, writable: true }]),
+        ),
+      };
+    },
+    set: async (ref, value) => {
+      credentials.set.push({ ref, value });
+      credentials.views[ref] = { configured: true, writable: true };
+      return { ok: true };
+    },
+  };
+
+  const remoteImpl = { $on: (event, listener) => {
+    calls.push({ kind: 'remote.$on', event });
+    listeners.set(event, listener);
+    return () => {};
+  } };
+
+  // `remote.credentials` 是**嵌套服务**：它也要按"声明了才能访问"的规矩来。
+  Object.defineProperty(remoteImpl, 'credentials', {
+    get() {
+      if (!declared.includes('remote.credentials')) {
+        throw new Error('服务 "remote.credentials" 没写进 inject 就被访问了 —— 真实 cordis 会拒绝');
+      }
+      return credentialsImpl;
+    },
+  });
 
   const implementations = {
     locale: {
@@ -125,7 +173,15 @@ function fakeContext() {
     configForms: {
       get: (ns) => {
         calls.push({ kind: 'configForms.get', ns });
-        return { getSnapshot: () => ({}), subscribe: () => () => {}, mutate: async () => true };
+        return {
+          getSnapshot: () => snapshot,
+          subscribe: (listener) => {
+            calls.push({ kind: 'configForms.subscribe' });
+            scopeListener = listener;
+            return () => {};
+          },
+          mutate: async () => true,
+        };
       },
       whileServed: (namespaces, callback) => {
         calls.push({ kind: 'configForms.whileServed', namespaces });
@@ -144,9 +200,9 @@ function fakeContext() {
         return () => {};
       },
     },
+    remote: remoteImpl,
   };
 
-  let declared = [];
   const ctx = {
     inject: (deps, callback) => {
       declared = deps;
@@ -173,7 +229,17 @@ function fakeContext() {
     });
   }
 
-  return { ctx, calls };
+  return {
+    ctx,
+    calls,
+    credentials,
+    listeners,
+    /** 改配置快照并触发订阅 —— 模拟"用户把引用名改了"。 */
+    setConfigValue(value) {
+      snapshot = { ...snapshot, value };
+      scopeListener();
+    },
+  };
 }
 
 describe('客户端 bundle', () => {
@@ -224,7 +290,7 @@ describe('客户端 bundle', () => {
     assert.deepEqual(enKeys, zhKeys, '两个词典的 key 必须一一对应（类型化注册也会强制）');
   });
 
-  it('apply() 等 slots / configForms / locale 就绪后再注册插槽', () => {
+  it('apply() 等服务就绪后再注册插槽（含写凭据域要用的 remote）', () => {
     const exports = loadBundle().factory((spec) => platformRequire(spec, stubPrimitives()));
     const { ctx, calls } = fakeContext();
 
@@ -233,8 +299,8 @@ describe('客户端 bundle', () => {
 
     assert.deepEqual(
       calls.find((call) => call.kind === 'inject')?.deps,
-      ['slots', 'configForms', 'locale'],
-      '用到的三个服务都必须声明（locale 漏过一次，导致客户端半边静默失效）',
+      ['slots', 'configForms', 'locale', 'remote', 'remote.credentials'],
+      '用到的服务都必须声明（locale 漏过一次导致客户端半边静默失效；remote.credentials 是写 Key 用的）',
     );
     assert.deepEqual(
       calls.find((call) => call.kind === 'configForms.whileServed')?.namespaces,
@@ -249,18 +315,30 @@ describe('客户端 bundle', () => {
     assert.equal(registration?.locale, NS, '插槽文案走本插件自己的词典命名空间');
   });
 
-  it('表单模型接了四个字段，且注入块同时给出 store 与 actions', () => {
+  it('表单模型接了四个配置字段 + 两个凭据控件（凭据控件不在 specs 里）', () => {
     const stub = stubPrimitives();
     const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
     const { ctx, calls } = fakeContext();
     exports.apply(ctx);
 
-    // 字段接线
+    // 配置字段接线
     const specs = stub.calls.constructed[0]?.specs;
     assert.deepEqual(
       specs?.map((spec) => spec.field),
       ['providerOrder', 'maxResultsPerEngine', 'anysearchApiKeyEnv', 'tavilyApiKeyEnv'],
-      '四个字段都要挂上表单模型',
+      '四个配置字段都要挂上表单模型',
+    );
+
+    // **凭据控件走第三个参数**：值写到 settings 之外（凭据域），所以不该出现在 specs 里。
+    const secrets = stub.calls.constructed[0]?.secrets;
+    assert.deepEqual(
+      secrets?.map((secret) => secret.field),
+      ['anysearchApiKeyCredential', 'tavilyApiKeyCredential'],
+      'Key 控件是 SettingsSecretSpec：写凭据域，不写配置',
+    );
+    assert.ok(
+      specs?.every((spec) => !secrets.some((secret) => secret.field === spec.field)),
+      'Key 控件的字段名不能和配置字段重名',
     );
     assert.equal(stub.calls.bound, 1, '投影应当恰好 bind 一次');
 
@@ -270,6 +348,72 @@ describe('客户端 bundle', () => {
     for (const action of ['edit', 'resetField', 'save', 'discard']) {
       assert.equal(typeof injected[action], 'function', `注入块应当带 ${action}`);
     }
+  });
+
+  // ── 直接填 Key（写凭据域，不写配置）─────────────────────────────────────
+
+  it('注册时按**默认引用名**问凭据域有没有配', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, credentials } = fakeContext();
+    exports.apply(ctx);
+    await Promise.resolve(); // 读取是异步的：让它跑完再断言
+
+    assert.deepEqual(credentials.describe, [['ANYSEARCH_API_KEY'], ['TAVILY_API_KEY']]);
+  });
+
+  it('在 Key 控件输入并保存 → 写的是**凭据域**，地址是配置里的引用名', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, credentials } = fakeContext();
+    exports.apply(ctx);
+
+    const secrets = stub.calls.constructed[0].secrets;
+    const tavily = secrets.find((secret) => secret.field === 'tavilyApiKeyCredential');
+
+    assert.equal(await tavily.write('tvly-secret-value'), true, 'Host 接受后应当返回 true');
+    assert.deepEqual(credentials.set, [{ ref: 'TAVILY_API_KEY', value: 'tvly-secret-value' }]);
+  });
+
+  it('引用名改了之后，Key 控件的写入地址跟着改', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, credentials, setConfigValue } = fakeContext();
+    exports.apply(ctx);
+
+    setConfigValue({ tavilyApiKeyEnv: 'MY_OWN_TAVILY_KEY' });
+    await Promise.resolve(); // 重读是异步的
+    assert.deepEqual(credentials.describe.at(-1), ['MY_OWN_TAVILY_KEY'], '重读要用新的引用名');
+
+    const tavily = stub.calls.constructed[0].secrets.find((s) => s.field === 'tavilyApiKeyCredential');
+    await tavily.write('tvly-x');
+    assert.equal(credentials.set.at(-1).ref, 'MY_OWN_TAVILY_KEY');
+  });
+
+  it('Host 报"已配置"时，投影里的徽标状态跟着变；reference-updated 会触发重读', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, calls, credentials, listeners } = fakeContext();
+
+    // 让 Host 说 Tavily 已经配好了（在 apply 之前的读取就会拿到它）
+    credentials.views.TAVILY_API_KEY = { configured: true, writable: true };
+    exports.apply(ctx);
+    await Promise.resolve(); // 读取是异步的
+    await Promise.resolve(); // describe 之后再投影一次
+
+    const injected = calls.find((call) => call.kind === 'slots.register')?.options?.inject?.();
+    const state = injected.hooks.webSearchConfig.getSnapshot();
+    assert.equal(state.tavilyConfigured, true, 'describe 说配了就应显示已设置');
+    assert.equal(state.anysearchConfigured, false);
+
+    // 别处写了同一个引用 → Host 发事件 → 重读
+    const before = credentials.describe.length;
+    listeners.get('credentials/reference-updated')('TAVILY_API_KEY');
+    await Promise.resolve();
+    assert.equal(credentials.describe.length, before + 1, '命中自己引用的更新应当重读');
+    listeners.get('credentials/reference-updated')('SOME_OTHER_KEY');
+    await Promise.resolve();
+    assert.equal(credentials.describe.length, before + 1, '别人的引用不该触发重读');
   });
 
   it('字段规格的解析规则：非法草稿必须被拒（parse 返回 undefined 才会阻止保存）', () => {

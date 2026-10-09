@@ -86,7 +86,11 @@ WEB_FETCH_TIMEOUT / WEB_ABORTED / WEB_INVALID_URL / WEB_PROVIDER_ERROR
 
 ### 凭据
 
-推荐用 dsh 的托管凭据。编辑 `$DSH_HOME/.credentials.yaml`（默认 `~/.dsh/.credentials.yaml`）：
+**最省事的办法是在插件页里直接填**：侧栏 **插件** → `dsh-web-search-gongyy` 的详情页有两个 Key 输入框，
+粘贴后点保存即可 —— Key 会写进 dsh 的**托管凭据域**（`$DSH_HOME/.credentials.yaml`），
+**不会**落到 `cordis.patch.yml`。界面只显示"已设置 / 未设置"，不会回显 Key 本身。
+
+也可以手编凭据文件（`$DSH_HOME/.credentials.yaml`，默认 `~/.dsh/.credentials.yaml`）：
 
 ```yaml
 TAVILY_API_KEY: "tvly-xxxxxxxx"
@@ -101,6 +105,7 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 也可以用启动环境变量（优先级低于托管凭据）：启动 dsh 前 `export TAVILY_API_KEY=...`。
 
 > 换 Key 不需要重启 —— 每次搜索都会重新解析凭据。
+> 卡片的 Key 输入框是**只写不读**的：它永远不会显示已存的 Key，这也是"空着保存不会清掉 Key"的原因。
 
 ### 插件配置
 

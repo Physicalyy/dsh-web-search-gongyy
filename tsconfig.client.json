@@ -36,6 +36,9 @@
       ],
       "@deepseek-ai/dsh-client-ui-plugin-manager/client": [
         "node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-api-remotes/client": [
+        "node_modules/@deepseek-ai/dsh-api-remotes/lib/types/client/index.d.ts"
       ]
     }
   },
