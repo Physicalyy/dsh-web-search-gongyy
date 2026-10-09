@@ -1,6 +1,6 @@
 # dsh-web-search-gongyy
 
-面向 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 Web 搜索插件，内部聚合 **AnySearch** 与 **Tavily**，按可配置顺序自动 fallback。
+面向 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 Web **搜索与抓取**插件，内部聚合 **AnySearch** 与 **Tavily**，按可配置顺序自动 fallback。
 
 ## 为什么需要它
 
@@ -25,6 +25,17 @@ dsh 默认的 `deepseek-official` 通道**不是一个专用检索端点**：每
 默认顺序 `[anysearch, tavily]`：首引擎额度是次引擎的约 30 倍，放前面更省。
 
 **装上即可用** —— AnySearch 支持匿名访问，不配任何 Key 就能搜索。Tavily 需要 Key，但只在 AnySearch 失败时才会用到。
+
+## 抓取（`web_fetch`）
+
+除了搜索，插件也接管 **`web_fetch`**：抓取改为走两个引擎的 extract 端点（AnySearch `/v1/extract`、
+Tavily `/extract`），模型拿到的是**清洗后的正文**，而不是"抓到什么算什么"的裸 HTML 转换结果。
+
+- fallback 逻辑与搜索完全一致，同样受 `providerOrder` 控制
+- **本机 / 内网地址抓不到** —— extract 服务在公网，`http://127.0.0.1/...` 这类地址会失败
+- 抽取质量因站点与引擎而异（例：AnySearch 抓 baidu 首页会返回一大段 `<style>` CSS，Tavily 返回页面 markdown）
+- 想**只退抓取、不退搜索**：删掉 `cordis.patch.yml` 里 `fetchProvider` 那一行，`web_fetch` 就回到
+  dsh-base 的 `http` provider，方便直接 A/B 对比
 
 ## 安装
 
@@ -106,6 +117,10 @@ ANYSEARCH_API_KEY: "as_sk_xxxxxxxx"
 
 重启 dsh 后，在对话里让它搜索（"搜一下今天的新闻"）。应当返回带 URL 的 sources。
 
+再让它抓一个具体 URL（或直接把链接丢给它）。返回的应当是**清洗后的正文**；想确认这次抓取真的走了本插件，
+抓一个非法协议地址（如 `ftp://example.com/probe`）——报错文案 `unsupported URL scheme "ftp:"` 是本插件的原文。
+`http://127.0.0.1:...` 这类内网地址也可以：本插件的报错会点名 `anysearch` / `tavily` 两个引擎。
+
 引擎发生 fallback 时会在 dsh 日志里留痕：
 
 ```
@@ -119,13 +134,16 @@ web-search-gongyy: fell back to engine "tavily" after 1 failure(s): ...
 
 在侧栏 **插件** → **Installed** 里找到 `dsh-web-search-gongyy` 并卸载（也可以先关掉它那一行的开关做临时停用），然后**重启 dsh**。
 
-卸载后 web 搜索**自动回落到** dsh-base 的 `deepseek-official`，无需手改 profile。
+卸载后 web 搜索**自动回落到** dsh-base 的 `deepseek-official`、抓取回落到 `http`，无需手改 profile。
 
 用户层的配置（`cordis.patch.yml` 里的 `web-search-gongyy` entry）不会自动清除，需要手工删掉；凭据文件里的 Key 也需要自己清理。
 
 ## 已知限制
 
-- **只有搜索，没有抓取。** 本版本不注册 fetch provider，也不改 `fetchProvider`，所以 `web_fetch` 保持原样由组合层提供。
+- **抓取走 extract 服务，不是裸 HTTP。** 好处是正文干净；代价是**本机/内网地址抓不到**（extract 服务在公网），
+  且抽取质量随站点与引擎而异。见上文「抓取」一节与 `.trellis/spec/plugin/architecture.md`。
+- **抓取没有单独开关。** `fetchProvider` 被 patch 钉死，把 `available()` 变假的后果是**报错**而不是让位；
+  "只退抓取"的正确做法是删掉 patch 里 `fetchProvider` 那一行。
 - **配置界面在插件页。** 侧栏 **插件** → `dsh-web-search-gongyy` 的详情页可以改引擎顺序、结果数上限和两个凭据引用名。**API Key 本身仍然走凭据域**（卡片只改引用名），也可以继续用手编 `cordis.patch.yml` 的方式。
 - **单引擎单 Key。** 同一引擎不支持多 Key 轮换。
 - **搜索参数只有 query 和 maxResults。** 这是 seam 的限制（时效性、域名过滤、地区等 provider 中立参数上游尚未定义），不是本插件偷懒。
@@ -148,7 +166,9 @@ pnpm run check     # 发布前门禁
 3. `dsh.bundle.patch` 指向的文件不存在；
 4. `cordis.patch.yml` 的 entry id 与源码注册的 provider id 不一致
    —— 表现为插件装上了、界面没报错，但搜索根本没走本插件；
-5. `cordis.patch.yml` 动了 `fetchProvider`，而本插件没注册 fetch provider。
+5. `cordis.patch.yml` 动了 `fetchProvider`，但 `src/index.ts` 里没有 `registerFetchProvider`
+   —— 接管了却没有能力，`web_fetch` 会报 `WEB_PROVIDER_CONFIGURED_MISSING`；
+6. 客户端半边声明不全，或顶层 `inject` 里写了包名（写错的后果是整个 Web 界面起不来）。
 
 ### 依赖布局用 hoisted
 
@@ -157,13 +177,16 @@ pnpm run check     # 发布前门禁
 ### 架构
 
 ```
-cordis.patch.yml      insert 本插件 + 把 web.searchProvider 重指过来
-src/index.ts          插件入口：Config schema、凭据解析、注册 provider
-src/provider.ts       FallbackSearchProvider —— 唯一注册到 ctx.web 的 provider
-src/engines/*.ts      anysearch / tavily 适配器（只做「查询 → 归一化 sources」）
+cordis.patch.yml      insert 本插件 + 把 web.searchProvider 与 web.fetchProvider 都重指过来
+src/index.ts          插件入口：Config schema、凭据解析、注册两个 provider
+src/provider.ts       FallbackSearchProvider + FallbackFetchProvider —— 注册到 ctx.web 的两个 provider
+src/engines/*.ts      anysearch / tavily 适配器（搜索必备，extract 用可选的 fetch() 表达）
+src/client.tsx        客户端半边：插件页里的配置卡片
 ```
 
-**只注册一个 provider 是硬约束。** seam 在没配 `searchProvider` 且存在多个可用 provider 时抛 `WEB_PROVIDER_AMBIGUOUS`，所以多引擎 fallback 必须做在 provider 内部。
+**搜索与抓取各只注册一个 provider，且共用同一个 id。** seam 在没配 `searchProvider` 且存在多个可用
+provider 时抛 `WEB_PROVIDER_AMBIGUOUS`，所以多引擎 fallback 必须做在 provider 内部；而 search / fetch
+是两个独立注册表，同一个 id 两边都能注册。
 
 开发时请先读本仓库的 `.trellis/spec/plugin/`，那里记录了目标运行时的真实接口契约与排查过程。
 
