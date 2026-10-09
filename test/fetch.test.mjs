@@ -188,6 +188,8 @@ describe('FallbackFetchProvider', () => {
         assert.equal(error.code, 'WEB_PROVIDER_ERROR');
         assert.ok(error.message.includes('anysearch'));
         assert.ok(error.message.includes('tavily'));
+        // 两者共用错误聚合函数，抓取失败时必须说 fetch 而不是 search（实测踩到过）。
+        assert.ok(error.message.includes('web fetch'), `文案应指明是抓取失败：${error.message}`);
         return true;
       },
     );
@@ -213,6 +215,7 @@ describe('FallbackFetchProvider', () => {
       (error) => {
         assert.equal(error.code, 'WEB_PROVIDER_CREDENTIAL_MISSING');
         assert.ok(error.message.includes('TAVILY_API_KEY'));
+        assert.ok(error.message.includes('web fetch'), `文案应指明是抓取失败：${error.message}`);
         return true;
       },
     );

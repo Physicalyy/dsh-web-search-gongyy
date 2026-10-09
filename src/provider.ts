@@ -44,25 +44,35 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 这次操作是搜索还是抓取 —— 只影响错误文案，不影响判定逻辑。 */
+type Capability = 'search' | 'fetch';
+
 /**
  * 把「所有引擎都没成功」拼成携带可操作指引的 `WebError`。
  *
  * 错误码的依据是 **是否真的发出过请求**，而不是「有没有 Key」：AnySearch 可以无 Key
  * 调用（匿名额度），所以只要发出去过，全失败就是 provider 层面的错误；一次都没发出去
  * （全被缺 Key 拦下）才是凭据问题。
+ *
+ * `capability` 是**实测补上的**：两个 provider 共用本函数，抓取失败时原文案说的是
+ * "web search engine"，用户看到的是一句与刚才那次抓取无关的话。
  */
-function buildAllEnginesFailed(failures: readonly string[], attempted: boolean): WebError {
+function buildAllEnginesFailed(
+  failures: readonly string[],
+  attempted: boolean,
+  capability: Capability,
+): WebError {
   const detail = failures.join('; ');
   if (attempted) {
     return new WebError(
-      `Every web search engine that could be called failed — ${detail}. ` +
+      `Every engine that could be called for this web ${capability} failed — ${detail}. ` +
         'Check each engine\'s availability and remaining quota, or reorder "providerOrder" ' +
         'in the web-search-gongyy configuration.',
       'WEB_PROVIDER_ERROR',
     );
   }
   return new WebError(
-    `No web search engine could be called — ${detail}. ` +
+    `No engine could be called for this web ${capability} — ${detail}. ` +
       'AnySearch works without a key (anonymous quota); Tavily needs TAVILY_API_KEY. ' +
       'Store a key in $DSH_HOME/.credentials.yaml, or export it before launching DSH.',
     'WEB_PROVIDER_CREDENTIAL_MISSING',
@@ -176,7 +186,7 @@ export class FallbackSearchProvider implements WebSearchProvider {
       }
     }
 
-    throw buildAllEnginesFailed(failures, attempted);
+    throw buildAllEnginesFailed(failures, attempted, 'search');
   }
 }
 
@@ -310,6 +320,6 @@ export class FallbackFetchProvider implements WebFetchProvider {
       }
     }
 
-    throw buildAllEnginesFailed(failures, attempted);
+    throw buildAllEnginesFailed(failures, attempted, 'fetch');
   }
 }

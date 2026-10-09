@@ -167,6 +167,8 @@ describe('FallbackSearchProvider', () => {
         assert.equal(error.code, 'WEB_PROVIDER_ERROR');
         assert.ok(error.message.includes('anysearch'), '消息应点名 anysearch');
         assert.ok(error.message.includes('tavily'), '消息应点名 tavily');
+        // 搜索与抓取共用错误聚合函数，文案必须说清是哪一种能力失败。
+        assert.ok(error.message.includes('web search'), `文案应指明是搜索失败：${error.message}`);
         return true;
       },
     );
