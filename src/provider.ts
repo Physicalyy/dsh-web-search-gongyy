@@ -240,6 +240,56 @@ function assertFetchableUrl(raw: string): void {
 }
 
 /**
+ * 内容质量判据的阈值 —— **集中一处**，标定过程见
+ * `tasks/archive/2026-10/10-09-fetch-quality-fallback/research/quality-calibration.md`。
+ *
+ * 标定样本（11 个真实页面 × 2 引擎）：
+ * - 垃圾样本（baidu 首页的 AnySearch 输出）：花括号+分号 **47.1/千字**、引号 **0/千字**、链接 **0**
+ * - 合法样本群的 cssScore 上限：**12.7/千字**（nodejs.org 的 Tavily 输出）
+ * - 唯一"cssScore 高但合法"的样本是 JSON：它的**引号密度是 69–72/千字** —— 用引号把它摘出去
+ *
+ * 阈值取在 12.7 与 47.1 之间（留 1.5× 余量）。三个子条件必须**同时**成立才判低质：
+ * 宁可漏判（多交给模型一份噪声），不要误伤（把 JSON/源码判成垃圾）。
+ */
+const QUALITY = {
+  /** 花括号+分号密度阈值（每千字符）。 */
+  cssDensityPer1k: 20,
+  /** 引号密度上限（每千字符）—— 高于它说明更像 JSON，不是 CSS。 */
+  quoteDensityPer1k: 10,
+} as const;
+
+/**
+ * 这份正文像不像"给模型看的正文"。
+ *
+ * 判据（两者任一命中即算非正文）：
+ * 1. 正文开头就是 `<style` / `<script`（标记残留）
+ * 2. 花括号+分号密度 ≥ 20/千字 **且** 引号密度 < 10/千字 **且** 链接数为 0（CSS 的形状）
+ *
+ * 纯本地、同步、无依赖。**不改** `truncated`，也不新增字段（seam 的 `WebFetchResult` 没有质量位）。
+ */
+function looksLikeNonProse(text: string): boolean {
+  if (/^\s*<(style|script)\b/i.test(text.slice(0, 200))) return true;
+
+  const length = Math.max(text.length, 1);
+  const per1k = (pattern: RegExp): number => ((text.match(pattern) ?? []).length / length) * 1000;
+
+  return (
+    per1k(/[{};]/g) >= QUALITY.cssDensityPer1k &&
+    per1k(/["']/g) < QUALITY.quoteDensityPer1k &&
+    (text.match(/\]\(/g) ?? []).length === 0
+  );
+}
+
+/** 低质原因的可读描述（写进 failures 与日志，便于将来按实际情况调阈值）。 */
+function describeNonProse(text: string): string {
+  const length = Math.max(text.length, 1);
+  const per1k = (pattern: RegExp): string =>
+    (((text.match(pattern) ?? []).length / length) * 1000).toFixed(1);
+  const head = /^\s*<(style|script)\b/i.test(text.slice(0, 200)) ? 'starts with a style/script tag' : 'css-like';
+  return `non-prose content (${head}; braces+semicolons ${per1k(/[{};]/g)}/1k, quotes ${per1k(/["']/g)}/1k)`;
+}
+
+/**
  * 把多个抓取引擎聚合成**一个** seam fetch provider。
  *
  * 与 {@link FallbackSearchProvider} 同构 —— 复用同一份配置快照、同一套取消纪律、
@@ -283,6 +333,8 @@ export class FallbackFetchProvider implements WebFetchProvider {
 
     const failures: string[] = [];
     let attempted = false;
+    /** 第一份"非正文"结果：所有引擎都给不出正文时退回它，而不是抛错。 */
+    let firstNonProse: WebFetchResult | undefined;
 
     for (const id of options.order) {
       throwIfAborted(signal, 'fetch');
@@ -333,18 +385,31 @@ export class FallbackFetchProvider implements WebFetchProvider {
           continue;
         }
 
+        const asResult: WebFetchResult = {
+          url: result.url ?? request.url,
+          statusCode: 200,
+          body: { kind: 'text', content: result.content },
+          truncated: result.truncated,
+        };
+
+        // 不是正文（实测：AnySearch 抓 baidu 首页给 5 万字符 <style> CSS）→ 当失败处理，
+        // 让下一个引擎有机会给真正文。**记住第一份**：万一所有引擎都只给出噪声，
+        // 返回它总好过抛错（详见 design.md 的 Q2）。
+        if (looksLikeNonProse(result.content)) {
+          const reason = describeNonProse(result.content);
+          failures.push(`${id}: ${reason}`);
+          options.warn(`web-search-gongyy: engine "${id}" returned ${reason}; trying next`);
+          firstNonProse ??= asResult;
+          continue;
+        }
+
         if (failures.length > 0) {
           options.warn(
             `web-search-gongyy: fell back to engine "${id}" for fetch after ${failures.length} failure(s): ${failures.join('; ')}`,
           );
         }
 
-        return {
-          url: result.url ?? request.url,
-          statusCode: 200,
-          body: { kind: 'text', content: result.content },
-          truncated: result.truncated,
-        };
+        return asResult;
       } catch (error) {
         // 顺序不变：先把取消/超时转成 seam 错误抛出去，再决定要不要记进 failures。
         throwIfAborted(signal, 'fetch');
@@ -362,6 +427,15 @@ export class FallbackFetchProvider implements WebFetchProvider {
           );
         }
       }
+    }
+
+    // 所有引擎都没给出正文，但只要有一份"非正文"内容，就返回它而不是抛错：
+    // 抛错会让用户彻底拿不到东西，而噪声至少可能含有信息（design.md 的 Q2）。
+    if (firstNonProse !== undefined) {
+      options.warn(
+        'web-search-gongyy: every engine returned non-prose content; returning the first one anyway',
+      );
+      return firstNonProse;
     }
 
     throw buildAllEnginesFailed(failures, attempted, 'fetch');

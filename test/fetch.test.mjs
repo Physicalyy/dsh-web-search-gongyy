@@ -6,9 +6,16 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, beforeEach, describe, it } from 'node:test';
 
 import { FallbackFetchProvider, PROVIDER_ID } from '../dist/index.js';
+
+/**
+ * 真实样本 fixture（由 `.tools/dsh-cli/make-quality-fixtures.mjs` 从真机 extract 结果截取）。
+ * 用真样本而不是手写字符串，否则等于"用魔法数字测魔法数字"。
+ */
+const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
 
 const realFetch = globalThis.fetch;
 
@@ -473,6 +480,107 @@ describe('FallbackFetchProvider', () => {
         return true;
       },
     );
+  });
+
+  // ── 低质正文兜底（判据与阈值由 11 个真实样本标定，见任务 research/quality-calibration.md）──
+
+  it('CSS 正文（真实 baidu 样本）判为低质，继续 fallback 到下一个引擎', async () => {
+    const css = fixture('baidu-anysearch-css.txt');
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return anysearchOk(css);
+      tavilyCalls += 1;
+      return tavilyOk('Tavily 的真页面 markdown');
+    });
+
+    const { provider, log } = snapshot();
+    const result = await provider.fetch({ url: TARGET });
+
+    assert.equal(tavilyCalls, 1, '低质不该终止链路');
+    assert.equal(result.body.content, 'Tavily 的真页面 markdown');
+    assert.ok(
+      log.messages.some((m) => m.includes('non-prose') && m.includes('style/script tag')),
+      `应留下低质原因：${JSON.stringify(log.messages)}`,
+    );
+  });
+
+  it('去掉开头 <style> 标签的真实 CSS 靠**密度**判据命中（条件 B）', async () => {
+    const css = fixture('css-without-leading-tag.txt');
+    assert.ok(!/^\s*<(style|script)/i.test(css), '前置：该样本不以标记开头，只能靠密度命中');
+
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return anysearchOk(css);
+      tavilyCalls += 1;
+      return tavilyOk('第二个引擎的正文');
+    });
+
+    const result = await snapshot().provider.fetch({ url: TARGET });
+    assert.equal(tavilyCalls, 1);
+    assert.equal(result.body.content, '第二个引擎的正文');
+  });
+
+  it('JSON 响应（真实 GitHub API 样本）**不**判低质：引号密度把它摘出去', async () => {
+    const json = fixture('github-api-json.json');
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return anysearchOk(json);
+      tavilyCalls += 1;
+      return tavilyOk('不该被调用');
+    });
+
+    const result = await snapshot().provider.fetch({ url: TARGET });
+
+    assert.equal(tavilyCalls, 0, 'JSON 是合法内容，不该被当成垃圾');
+    assert.equal(result.body.content, json);
+  });
+
+  it('极短合法页（真实 example.com 样本）不判低质', async () => {
+    const short = fixture('example-com.txt');
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return anysearchOk(short);
+      tavilyCalls += 1;
+      return tavilyOk('不该被调用');
+    });
+
+    const result = await snapshot().provider.fetch({ url: TARGET });
+    assert.equal(tavilyCalls, 0);
+    assert.equal(result.body.content, short);
+  });
+
+  it('两个引擎都只给非正文时，返回**第一份**并留痕（不抛错）', async () => {
+    const first = fixture('baidu-anysearch-css.txt');
+    const second = fixture('css-without-leading-tag.txt'); // 两份不同的非正文样本
+    stubFetch((url) => (url.includes('anysearch.com') ? anysearchOk(first) : tavilyOk(second)));
+
+    const { provider, log } = snapshot();
+    const result = await provider.fetch({ url: TARGET });
+
+    assert.equal(result.body.content, first, '要退回首份结果，而不是最后一份、也不是抛错');
+    assert.equal(result.statusCode, 200);
+    assert.ok(
+      log.messages.some((m) => m.includes('every engine returned non-prose content')),
+      `应有明确的 warn：${JSON.stringify(log.messages)}`,
+    );
+  });
+
+  it('低质 + 后续引擎报错时：返回第一份低质结果，且两类原因都留在日志里', async () => {
+    const css = fixture('baidu-anysearch-css.txt');
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return anysearchOk(css);
+      return json({ error: 'down' }, 503);
+    });
+
+    const { provider, log } = snapshot();
+    const result = await provider.fetch({ url: TARGET });
+
+    // Q2 的取舍：手上有内容就返回内容 —— 抛错会让用户彻底拿不到东西。
+    assert.equal(result.body.content, css, '不该因为第二个引擎报错就把第一份内容丢掉');
+
+    const joined = log.messages.join('\n');
+    assert.ok(joined.includes('non-prose'), `低质原因要在日志里：${joined}`);
+    assert.ok(joined.includes('503'), `后续引擎的报错原因也要在日志里：${joined}`);
   });
 
   // ── 一个无法测的分支（如实标注，不假装覆盖了）──────────────────────────
