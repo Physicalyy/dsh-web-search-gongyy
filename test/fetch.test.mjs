@@ -297,6 +297,184 @@ describe('FallbackFetchProvider', () => {
     assert.equal(result.truncated, false, '截图上限由 seam 自己按输出上限处理');
   });
 
+  // ── 上游失败的分类与短路（2026-10-09 实测形状，见任务的 research/upstream-error-codes.md）──
+
+  it('Tavily 的失败包在 HTTP 200 里：原因必须带进消息，而不是压成 empty content', async () => {
+    stubFetch(() => json({ results: [], failed_results: [{ url: TARGET, error: 'Failed to fetch url' }] }));
+
+    const { provider, log } = snapshot({ options: { order: ['tavily'] } });
+
+    await assert.rejects(
+      () => provider.fetch({ url: TARGET }),
+      (error) => {
+        assert.equal(error.code, 'WEB_PROVIDER_ERROR');
+        assert.ok(
+          error.message.includes('Failed to fetch url'),
+          `必须带出上游原话，实际：${error.message}`,
+        );
+        return true;
+      },
+    );
+    assert.ok(log.messages.some((m) => m.includes('Failed to fetch url')));
+  });
+
+  it('Tavily 说 URL 被策略拒绝时抛 WEB_BLOCKED_URL，且不再尝试后面的引擎（短路）', async () => {
+    let anysearchCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) {
+        anysearchCalls += 1;
+        return anysearchOk('不该被调用');
+      }
+      // 实测形状：非公网地址会换来 400 + failed_results 里的 Validation Error
+      return json(
+        {
+          detail: { error: 'All URLs failed validation.' },
+          failed_results: [{ url: TARGET, error: 'Validation Error: Invalid URL format' }],
+        },
+        400,
+      );
+    });
+
+    const { provider } = snapshot({ options: { order: ['tavily', 'anysearch'] } });
+
+    await assert.rejects(
+      () => provider.fetch({ url: TARGET }),
+      (error) => {
+        // 能走到引擎的 URL 一定已过本地语法校验，所以上游这句"格式非法"在本管线里
+        // 实际是**目标不被允许**（实测就是非公网地址），对应 WEB_BLOCKED_URL ——
+        // 与官方 http provider 对同一地址的报法一致。
+        assert.equal(error.code, 'WEB_BLOCKED_URL');
+        assert.ok(error.message.includes('Invalid URL format'), error.message);
+        assert.ok(error.message.includes('remaining engines were not tried'), '应说明短路原因');
+        return true;
+      },
+    );
+
+    assert.equal(anysearchCalls, 0, 'URL 级失败与引擎无关，不该再试下一个');
+  });
+
+  it('Tavily HTTP 400 把 failed_results 嵌在 detail 里时，仍取到**具体**原因并短路', async () => {
+    let anysearchCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) {
+        anysearchCalls += 1;
+        return anysearchOk('不该被调用');
+      }
+      // 实测形状（真机抓到的原样结构）：failed_results 嵌在 detail 内，且 detail.error 是泛化文案
+      return json(
+        {
+          detail: {
+            error: 'All URLs failed validation.',
+            failed_results: [{ url: TARGET, error: 'Validation Error: Invalid URL format' }],
+          },
+        },
+        400,
+      );
+    });
+
+    const { provider } = snapshot({ options: { order: ['tavily', 'anysearch'] } });
+
+    await assert.rejects(
+      () => provider.fetch({ url: TARGET }),
+      (error) => {
+        assert.equal(error.code, 'WEB_BLOCKED_URL');
+        assert.ok(
+          error.message.includes('Invalid URL format'),
+          `必须取到具体原因而不是泛化的 detail.error，实际：${error.message}`,
+        );
+        return true;
+      },
+    );
+
+    assert.equal(anysearchCalls, 0, '短路生效');
+  });
+
+  it('AnySearch 无信封的 403 归类为 URL 被拒，但**不短路**（403 也可能是配额/鉴权问题）', async () => {
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) {
+        return new Response('<!DOCTYPE HTML><html><title>ERROR: The requested URL could not be retrieved', {
+          status: 403,
+          statusText: 'Forbidden',
+        });
+      }
+      tavilyCalls += 1;
+      return tavilyOk('Tavily 救回来了');
+    });
+
+    const { provider } = snapshot();
+
+    const result = await provider.fetch({ url: TARGET });
+
+    assert.equal(tavilyCalls, 1, '403 不短路：仍要给别的引擎一次机会');
+    assert.equal(result.body.content, 'Tavily 救回来了');
+  });
+
+  it('AnySearch 信封 code !== 0 时，消息里带出上游的 code 与 message', async () => {
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) {
+        return json({ code: -1, message: 'Unable to extract content from the URL.', data: {} });
+      }
+      return json({ results: [], failed_results: [{ url: TARGET, error: 'Failed to fetch url' }] });
+    });
+
+    await assert.rejects(
+      () => snapshot().provider.fetch({ url: TARGET }),
+      (error) => {
+        assert.equal(error.code, 'WEB_PROVIDER_ERROR');
+        assert.ok(error.message.includes('code=-1'), `应带出上游 code，实际：${error.message}`);
+        assert.ok(error.message.includes('Unable to extract content'), '应带出上游 message');
+        return true;
+      },
+    );
+  });
+
+  it('上游 5xx 不短路：仍会尝试下一个引擎', async () => {
+    let tavilyCalls = 0;
+    stubFetch((url) => {
+      if (url.includes('anysearch.com')) return json({ error: 'down' }, 503);
+      tavilyCalls += 1;
+      return tavilyOk('Tavily 的正文');
+    });
+
+    const result = await snapshot().provider.fetch({ url: TARGET });
+    assert.equal(tavilyCalls, 1);
+    assert.equal(result.body.content, 'Tavily 的正文');
+  });
+
+  // ── 超时与取消必须可区分 ──────────────────────────────────────────────────
+
+  it('超时（AbortSignal.timeout）抛 WEB_FETCH_TIMEOUT，而不是 WEB_ABORTED', async () => {
+    stubFetch(() => {
+      throw new Error('不该被调用');
+    });
+
+    const signal = AbortSignal.timeout(5);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(signal.aborted, true, '前置：超时信号必须已经 abort');
+
+    await assert.rejects(
+      () => snapshot().provider.fetch({ url: TARGET }, signal),
+      (error) => {
+        assert.equal(error.code, 'WEB_FETCH_TIMEOUT', `实际：${error.code} / ${error.message}`);
+        return true;
+      },
+    );
+  });
+
+  it('调用方取消仍抛 WEB_ABORTED（与超时可区分）', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('user cancelled'));
+
+    await assert.rejects(
+      () => snapshot().provider.fetch({ url: TARGET }, controller.signal),
+      (error) => {
+        assert.equal(error.code, 'WEB_ABORTED');
+        return true;
+      },
+    );
+  });
+
   // ── 一个无法测的分支（如实标注，不假装覆盖了）──────────────────────────
   // 「跳过没有 extract 端点的引擎」这条分支在当前引擎集下**不可达** —— AnySearch 与
   // Tavily 都实现了 fetch。它是为纯 SERP 引擎（如 Brave）预留的，而引擎列表

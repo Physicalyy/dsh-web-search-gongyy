@@ -1,4 +1,5 @@
 import type { Engine, EngineFetchResult, EngineResult, EngineSource } from '../types.js';
+import { EngineFetchError } from '../types.js';
 import { asArray, asRecord, optionalString } from './fields.js';
 
 /** AnySearch 公开 API 基地址。 */
@@ -37,6 +38,68 @@ function jsonHeaders(apiKey: string): Record<string, string> {
     'content-type': 'application/json',
     ...(apiKey.length > 0 ? { authorization: `Bearer ${apiKey}` } : {}),
   };
+}
+
+/**
+ * 把 extract 的非 2xx 分类。
+ *
+ * 实测（2026-10-09，含**完整信封**）：
+ * - `http://127.0.0.1:19387/` 这类非公网目标 → **403 + 一整页 HTML 错误页**（不是信封）
+ * - 其余失败 → **422 + 信封**，但信封里 `code=-1`、`error_code="extract_failed"`、
+ *   `message="Unable to extract content from the URL."` ——
+ *   "主机不存在 / PDF / 404 路径 / 反爬站点"**四种情形完全相同**，
+ *   所以**没有** `extract_target_blocked` / `extract_unsupported_content` 之类的可区分码
+ *   （参考实现里那张表在本版本的公开 API 上不存在）
+ *
+ * 结论：只区分"非信封的 403"（`engine-failed` + 记下状态码）与其它（同样 `engine-failed`），
+ * 但**把信封字段原样带进消息** —— 那是排查的唯一线索。
+ *
+ * 注意：403 虽然看起来像"目标被拒"，但 403 也可能来自配额/鉴权层面，所以聚合层
+ * **不为它短路**（见 `provider.ts` 的 `isTerminalFetchFailure`）：宁可多跑一次 fallback，
+ * 也不要因为一次边缘拒绝就放弃其它引擎。
+ */
+function extractFailureFromHttp(status: number, statusText: string, body: string): EngineFetchError {
+  const compact = body.replace(/\s+/g, ' ').trim();
+  const envelope = asRecord(safeJson(compact));
+
+  if (envelope !== undefined && (envelope['code'] !== undefined || envelope['message'] !== undefined)) {
+    const parts = [
+      envelope['code'] === undefined ? undefined : `code=${String(envelope['code'])}`,
+      optionalString(envelope['error_code']) === undefined
+        ? undefined
+        : `error_code=${optionalString(envelope['error_code']) as string}`,
+      optionalString(envelope['message']) === undefined
+        ? undefined
+        : `message=${optionalString(envelope['message']) as string}`,
+    ].filter((part): part is string => part !== undefined);
+
+    const reason = parts.join(', ');
+    return new EngineFetchError(`AnySearch extract failed: HTTP ${status} ${statusText} (${reason})`, {
+      kind: 'engine-failed',
+      upstreamStatus: status,
+      ...(envelope['code'] === undefined ? {} : { upstreamCode: String(envelope['code']) }),
+      reason,
+    });
+  }
+
+  const reason = compact.length === 0 ? undefined : compact.slice(0, 200);
+  return new EngineFetchError(
+    `AnySearch extract failed: HTTP ${status} ${statusText}${reason === undefined ? '' : ` (body: ${reason})`}`,
+    {
+      kind: 'engine-failed',
+      upstreamStatus: status,
+      ...(reason === undefined ? {} : { reason }),
+    },
+  );
+}
+
+/** 解析 JSON，失败返回 `undefined`（上游的 403 是一整页 HTML，不能假定是 JSON）。 */
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -100,6 +163,13 @@ export const anysearchEngine: Engine = {
    * 抓取一个 URL 的清洗正文：`POST /v1/extract`，取 `data.content`。
    *
    * 与搜索同样要判信封 —— extract 的 HTTP 200 也可能是业务失败。
+   *
+   * **错误的分类只做两档**（实测依据见 tasks/10-09-fetch-typed-errors/research/upstream-error-codes.md）：
+   * - 非 2xx **且响应体不是信封**（实测是一整页 HTML）→ `url-blocked`：这是 AnySearch 的边缘策略
+   *   在拒绝这个目标，与"哪个引擎来抓"无关
+   * - 其余一切（信封 `code !== 0`、5xx）→ `engine-failed`：AnySearch 把它们全压成
+   *   `422 / code:-1 / "Unable to extract content from the URL."`，**区分不了**
+   *   "被反爬"与"抽不出正文"，所以不编造更细的码
    */
   async fetch(url, apiKey, signal): Promise<EngineFetchResult> {
     const response = await fetch(`${BASE_URL}/v1/extract`, {
@@ -110,11 +180,21 @@ export const anysearchEngine: Engine = {
     });
 
     if (!response.ok) {
-      throw new Error(`AnySearch extract failed: HTTP ${response.status} ${response.statusText}`);
+      const body = await response.text().catch(() => '');
+      throw extractFailureFromHttp(response.status, response.statusText, body);
     }
 
     const envelope = (await response.json()) as Envelope;
-    if (envelope.code !== 0) throw envelopeFailure('extract', envelope);
+    if (envelope.code !== 0) {
+      const code = envelope.code === undefined ? '(absent)' : String(envelope.code);
+      const reason = optionalString(envelope.message) ?? '(no message)';
+      throw new EngineFetchError(`AnySearch extract failed: code=${code}, message=${reason}`, {
+        kind: 'engine-failed',
+        upstreamStatus: response.status,
+        upstreamCode: envelope.code === undefined ? '(absent)' : String(envelope.code),
+        reason,
+      });
+    }
 
     const data = asRecord(envelope.data);
     const content = optionalString(data?.['content']) ?? '';

@@ -35,10 +35,67 @@ export interface EngineFetchResult {
   readonly url?: string;
 }
 
+/**
+ * 抓取失败的分类。
+ *
+ * 取值**只覆盖两个引擎真的能区分出来的情形**（依据 2026-10-09 的真机实测，
+ * 见 tasks/10-09-fetch-typed-errors/research/upstream-error-codes.md）：
+ * AnySearch 除"无信封的 403"之外一律回 `422 / code:-1` 通用消息，所以它区分不出
+ * "被反爬"与"抽不出内容"—— 那就不要编。
+ */
+export type EngineFailureKind =
+  /**
+   * 上游**策略层面**拒绝了这个 URL（Tavily 的 `Validation Error: Invalid URL format`）。
+   *
+   * 注意名字不是 `url-invalid`：能走到引擎的 URL 一定已经通过本地语法校验
+   * （`assertFetchableUrl` 拦掉了非 http/https 与解析失败），所以上游这句
+   * "格式非法"在我们的管线里实际含义是**目标不被允许**（实测：非公网地址）
+   * —— 对应 seam 的 `WEB_BLOCKED_URL`，与官方 `http` provider 的报法一致。
+   * 与引擎无关，因此**短路**。
+   */
+  | 'url-rejected'
+  /** 引擎自己抓取失败（`Failed to fetch url`、HTTP 5xx、网络异常）。可能是瞬时的。 */
+  | 'engine-failed';
+
+/**
+ * 抓取失败的结构化载体。
+ *
+ * 引擎层仍然**不** import `WebError`（分层铁律）：这里只描述「上游说了什么」，
+ * 错误码由聚合层决定。`reason` 一律是**上游原话**，不改写 —— 它是排查的唯一线索。
+ */
+export class EngineFetchError extends Error {
+  readonly kind: EngineFailureKind;
+  /** 上游 HTTP 状态；网络异常时为 `undefined`。 */
+  readonly upstreamStatus?: number;
+  /** 上游业务码（AnySearch 信封的 `code`；Tavily 没有）。 */
+  readonly upstreamCode?: string | number;
+  /** 上游给的原因文本。 */
+  readonly reason?: string;
+
+  constructor(
+    message: string,
+    fields: {
+      kind: EngineFailureKind;
+      upstreamStatus?: number;
+      upstreamCode?: string | number;
+      reason?: string;
+      cause?: unknown;
+    },
+  ) {
+    super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
+    this.name = 'EngineFetchError';
+    this.kind = fields.kind;
+    if (fields.upstreamStatus !== undefined) this.upstreamStatus = fields.upstreamStatus;
+    if (fields.upstreamCode !== undefined) this.upstreamCode = fields.upstreamCode;
+    if (fields.reason !== undefined) this.reason = fields.reason;
+  }
+}
+
 /** 一个后端引擎。搜索是必备能力；抓取可选。 */
 export interface Engine {
   /** 稳定 id，同时是 `providerOrder` 里使用的值。 */
   readonly id: string;
+
   /** 未配置字面 Key 时查询的环境变量名。 */
   readonly apiKeyEnv: string;
   /**

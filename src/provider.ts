@@ -8,6 +8,7 @@ import type {
   WebSearchResult,
 } from '@deepseek-ai/dsh-web';
 import { engineById, knownEngineIds } from './engines/index.js';
+import { EngineFetchError } from './types.js';
 import type { Engine } from './types.js';
 
 /** 注册到 `ctx.web` 的稳定 provider id。 */
@@ -32,16 +33,48 @@ export interface ProviderOptions {
   warn(message: string): void;
 }
 
-/** 已取消就抛 seam 的稳定取消错误，保留调用方给的原因。 */
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw new WebError('Web search aborted', 'WEB_ABORTED', { cause: signal.reason });
-  }
+/**
+ * 已取消就抛 seam 的稳定取消错误，保留调用方给的原因。
+ *
+ * **超时与取消要分开**：`AbortSignal.timeout()` 到点时 `signal.aborted === true`，
+ * 但 `reason` 是 `TimeoutError` —— 那是超时（`WEB_FETCH_TIMEOUT`），不是调用方取消。
+ * 只有抓取侧做这个区分：搜索侧的既有行为（一律 `WEB_ABORTED`）不在本任务范围内改动。
+ */
+function throwIfAborted(signal: AbortSignal | undefined, capability: Capability = 'search'): void {
+  if (signal?.aborted !== true) return;
+
+  const timedOut =
+    capability === 'fetch' &&
+    signal.reason instanceof Error &&
+    signal.reason.name === 'TimeoutError';
+
+  throw new WebError(
+    timedOut ? 'Web fetch timed out' : `Web ${capability} aborted`,
+    timedOut ? 'WEB_FETCH_TIMEOUT' : 'WEB_ABORTED',
+    { cause: signal.reason },
+  );
 }
 
 /** 把任意抛出物压成一行可读文本。 */
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 抓取链上"这个失败与谁去抓无关"的判断依据。
+ *
+ * 依据 2026-10-09 的上游实测（`tasks/10-09-fetch-typed-errors/research/upstream-error-codes.md`）——
+ * **只映射我们真的观测得到的信号**：编出来的码比没有更糟，因为它会误导排查。
+ *
+ * | `EngineFetchError.kind` | seam 码 | 是否短路 |
+ * | --- | --- | --- |
+ * | `url-rejected` | `WEB_BLOCKED_URL` | ✅ 上游策略拒绝该目标，换引擎也一样 |
+ * | `engine-failed` | `WEB_PROVIDER_ERROR` | ❌ 可能是瞬时的，换引擎有意义 |
+ *
+ * 本地语法校验拦下的非法 URL 仍然是 `WEB_INVALID_URL`（`assertFetchableUrl`，不发任何请求）。
+ */
+function isTerminalFetchFailure(error: unknown): boolean {
+  return error instanceof EngineFetchError && error.kind === 'url-rejected';
 }
 
 /** 这次操作是搜索还是抓取 —— 只影响错误文案，不影响判定逻辑。 */
@@ -252,7 +285,7 @@ export class FallbackFetchProvider implements WebFetchProvider {
     let attempted = false;
 
     for (const id of options.order) {
-      throwIfAborted(signal);
+      throwIfAborted(signal, 'fetch');
 
       const engine = engineById(id);
       if (engine === undefined) {
@@ -273,7 +306,7 @@ export class FallbackFetchProvider implements WebFetchProvider {
       try {
         apiKey = options.literalApiKey(engine) ?? (await options.resolveApiKey(engine, signal));
       } catch (error) {
-        throwIfAborted(signal);
+        throwIfAborted(signal, 'fetch');
         const reason = describe(error);
         failures.push(`${id}: credential resolution failed (${reason})`);
         options.warn(`web-search-gongyy: engine "${id}" credential resolution failed: ${reason}`);
@@ -313,10 +346,21 @@ export class FallbackFetchProvider implements WebFetchProvider {
           truncated: result.truncated,
         };
       } catch (error) {
-        throwIfAborted(signal);
+        // 顺序不变：先把取消/超时转成 seam 错误抛出去，再决定要不要记进 failures。
+        throwIfAborted(signal, 'fetch');
         const reason = describe(error);
         failures.push(`${id}: ${reason}`);
         options.warn(`web-search-gongyy: engine "${id}" fetch failed: ${reason}; trying next`);
+
+        // 与引擎无关的失败：继续试下一个只会再失败一次（实测内网地址白跑 427–818ms）。
+        if (isTerminalFetchFailure(error)) {
+          throw new WebError(
+            `Web fetch was blocked for this URL — ${failures.join('; ')}. ` +
+              'This failure is about the URL itself, so the remaining engines were not tried. ' +
+              'Check the URL, or reorder "providerOrder" in the web-search-gongyy configuration.',
+            'WEB_BLOCKED_URL',
+          );
+        }
       }
     }
 
