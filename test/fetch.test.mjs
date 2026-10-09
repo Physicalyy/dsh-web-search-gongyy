@@ -482,7 +482,43 @@ describe('FallbackFetchProvider', () => {
     );
   });
 
-  // ── 低质正文兜底（判据与阈值由 11 个真实样本标定，见任务 research/quality-calibration.md）──
+  // ── 网络错误要把 cause 带出来（否则只剩一句 fetch failed）──────────────
+
+  it('网络错误要把 cause 链带进消息', async () => {
+    stubFetch(() => {
+      // undici 的真实形状：TypeError: fetch failed，原因在 cause 里
+      const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9'), { code: 'ECONNREFUSED' });
+      throw new TypeError('fetch failed', { cause });
+    });
+
+    await assert.rejects(
+      () => snapshot({ options: { order: ['tavily'] } }).provider.fetch({ url: TARGET }),
+      (error) => {
+        assert.ok(error.message.includes('fetch failed'), error.message);
+        assert.ok(
+          error.message.includes('ECONNREFUSED'),
+          `cause 必须带出来，否则看不出断在哪一层：${error.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('没有 message 但有 code 的错误，用 code 当标签', async () => {
+    stubFetch(() => {
+      throw Object.assign(new Error(''), { code: 'UND_ERR_SOCKET' });
+    });
+
+    await assert.rejects(
+      () => snapshot({ options: { order: ['tavily'] } }).provider.fetch({ url: TARGET }),
+      (error) => {
+        assert.ok(error.message.includes('UND_ERR_SOCKET'), error.message);
+        return true;
+      },
+    );
+  });
+
+  // ── 低质正文兜底（判据与阈值由真实样本标定，见任务 research/quality-calibration*.md）──
 
   it('CSS 正文（真实 baidu 样本）判为低质，继续 fallback 到下一个引擎', async () => {
     const css = fixture('baidu-anysearch-css.txt');

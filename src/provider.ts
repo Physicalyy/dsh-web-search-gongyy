@@ -55,9 +55,41 @@ function throwIfAborted(signal: AbortSignal | undefined, capability: Capability 
   );
 }
 
-/** 把任意抛出物压成一行可读文本。 */
+/** 无消息时的标签：Node 的网络错误靠 `code` 区分，优先用它。 */
+function labelOf(error: Error): string {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && code.length > 0 ? code : error.name;
+}
+
+/**
+ * 把任意抛出物压成一行可读文本，**带上 cause 链**。
+ *
+ * undici 的网络失败原因在 `error.cause` 里（`ECONNRESET` / `UND_ERR_*` / 证书问题…），
+ * 只取 `message` 会退化成一句 `fetch failed` —— 实测在 dsh 宿主进程里就是这样，
+ * 完全看不出断在哪一层（同一个地址在独立夹具里回的是 403，说明上游边缘行为不稳定）。
+ *
+ * 最多往下走 3 层并去重（Node 常见 `TypeError: fetch failed` → `Error: connect ECONNREFUSED …`）。
+ */
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+
+  const chain: string[] = [error.message.length === 0 ? labelOf(error) : error.message];
+  let cause: unknown = (error as { cause?: unknown }).cause;
+
+  for (let depth = 0; depth < 3 && cause !== undefined && cause !== null; depth += 1) {
+    if (cause instanceof Error) {
+      const entry = cause.message.length === 0 ? labelOf(cause) : `${labelOf(cause)}: ${cause.message}`;
+      if (!chain.includes(entry)) chain.push(entry);
+      cause = (cause as { cause?: unknown }).cause;
+    } else {
+      const entry = String(cause);
+      if (!chain.includes(entry)) chain.push(entry);
+      break;
+    }
+  }
+
+  const head = chain[0] ?? String(error);
+  return chain.length === 1 ? head : `${head} (cause: ${chain.slice(1).join(' → ')})`;
 }
 
 /**
@@ -241,17 +273,20 @@ function assertFetchableUrl(raw: string): void {
 
 /**
  * 内容质量判据的阈值 —— **集中一处**，标定过程见
- * `tasks/archive/2026-10/10-09-fetch-quality-fallback/research/quality-calibration.md`。
+ * `tasks/archive/2026-10/10-09-fetch-quality-fallback/research/quality-calibration.md`
+ *（后续扩样见 `tasks/10-09-fetch-polish/research/quality-calibration-2.md`）。
  *
- * 标定样本（11 个真实页面 × 2 引擎）：
+ * 标定样本（真实页面 × 2 引擎）：
  * - 垃圾样本（baidu 首页的 AnySearch 输出）：花括号+分号 **47.1/千字**、引号 **0/千字**、链接 **0**
  * - 合法样本群的 cssScore 上限：**12.7/千字**（nodejs.org 的 Tavily 输出）
  * - 唯一"cssScore 高但合法"的样本是 JSON：它的**引号密度是 69–72/千字** —— 用引号把它摘出去
  *
  * 阈值取在 12.7 与 47.1 之间（留 1.5× 余量）。三个子条件必须**同时**成立才判低质：
  * 宁可漏判（多交给模型一份噪声），不要误伤（把 JSON/源码判成垃圾）。
+ *
+ * 导出是为了让**标定脚本与测试用同一份实现** —— 抄一份阈值过去一定会漂移。
  */
-const QUALITY = {
+export const QUALITY = {
   /** 花括号+分号密度阈值（每千字符）。 */
   cssDensityPer1k: 20,
   /** 引号密度上限（每千字符）—— 高于它说明更像 JSON，不是 CSS。 */
@@ -267,7 +302,7 @@ const QUALITY = {
  *
  * 纯本地、同步、无依赖。**不改** `truncated`，也不新增字段（seam 的 `WebFetchResult` 没有质量位）。
  */
-function looksLikeNonProse(text: string): boolean {
+export function looksLikeNonProse(text: string): boolean {
   if (/^\s*<(style|script)\b/i.test(text.slice(0, 200))) return true;
 
   const length = Math.max(text.length, 1);

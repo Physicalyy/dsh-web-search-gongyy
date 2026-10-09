@@ -8,8 +8,12 @@ import type { ProviderOptions } from './provider.js';
 import type { Engine } from './types.js';
 
 export { FallbackFetchProvider, FallbackSearchProvider, PROVIDER_ID };
+// 质量判据导出，好让标定脚本/测试用**同一份实现**，而不是各自抄一份阈值
+export { QUALITY, looksLikeNonProse } from './provider.js';
 export { ENGINES, engineById, knownEngineIds } from './engines/index.js';
 export type { Engine, EngineFetchResult, EngineResult, EngineSource } from './types.js';
+export type { EngineFailureKind } from './types.js';
+export { EngineFetchError } from './types.js';
 
 /** Cordis loader 诊断用的插件名；同时是 `cordis.patch.yml` 里引用的 entry id。 */
 export const name = PROVIDER_ID;
