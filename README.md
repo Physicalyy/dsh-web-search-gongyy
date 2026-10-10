@@ -70,8 +70,10 @@ pnpm install && pnpm build     # dist/ 不入库，必须先构建（见下方�
 
 然后用下面的界面方式安装，路径填这个仓库的**绝对路径**。
 
-> 目前**没有发布到 npm** —— 只能从源码路径安装。`package.json` 里的 `version` 是 `0.0.1`，
-> 首次对外发布时要一起确定（打 tag 与 npm 版本号）。
+> **发布状态**：GitHub 已公开（<https://github.com/Physicalyy/dsh-web-search-gongyy>）；
+> **npm 尚未发布** —— 所以现在只能从源码路径安装。版本号是 `0.1.0`。
+> 发布到 npm 之后，安装时改填包名 `dsh-web-search-gongyy` 即可（发布步骤见
+> `.trellis/spec/plugin/build-and-packaging.md` 第 9 节）。
 
 ### 只有界面一条路（`desktop` profile）
 
