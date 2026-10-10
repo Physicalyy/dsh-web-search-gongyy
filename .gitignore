@@ -6,6 +6,11 @@ dist/
 .env.*
 *.credentials.yaml
 
+# Trellis 开发记录：只留在本地，不进仓库
+# （journal / spec / 任务工件里有评审过程、事故复盘与本机路径；对外只公开插件代码）
+# 注意：加上这条之后，trellis 的自动提交会退化成警告 —— 见 .trellis/scripts/common/safe_commit.py
+.trellis/
+
 # 编辑器 / 系统噪音
 .DS_Store
 Thumbs.db
