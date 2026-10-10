@@ -11,6 +11,14 @@ dist/
 # 注意：加上这条之后，trellis 的自动提交会退化成警告 —— 见 .trellis/scripts/common/safe_commit.py
 .trellis/
 
+# 同一类：trellis 的过程/规范文件（技能说明、给各平台的 agent 配置与钩子、协作授权规范）
+# 对"仓库只放插件代码"来说它们同样是过程内容，因此一并只留本地。
+# AGENTS.md 里除了 trellis 说明，还写着本项目的授权规则与两次事故的经过。
+.agents/
+.codex/
+.dsh/
+AGENTS.md
+
 # 编辑器 / 系统噪音
 .DS_Store
 Thumbs.db
