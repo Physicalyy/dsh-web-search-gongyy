@@ -4,6 +4,14 @@
   "description": "AnySearch + Tavily backed web search provider for DeepSeek Harness (dsh)",
   "license": "MIT",
   "author": "gongyy",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Physicalyy/dsh-web-search-gongyy.git"
+  },
+  "homepage": "https://github.com/Physicalyy/dsh-web-search-gongyy#readme",
+  "bugs": {
+    "url": "https://github.com/Physicalyy/dsh-web-search-gongyy/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "files": [

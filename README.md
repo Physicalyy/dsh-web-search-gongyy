@@ -60,6 +60,19 @@ WEB_FETCH_TIMEOUT / WEB_ABORTED / WEB_INVALID_URL / WEB_PROVIDER_ERROR
 
 前置条件：dsh ≥ `0.2.0-rc.2`，且 profile 的依赖管理用 pnpm。
 
+### 从 GitHub 取源码
+
+```sh
+git clone git@github.com:Physicalyy/dsh-web-search-gongyy.git   # 或 https://github.com/Physicalyy/dsh-web-search-gongyy.git
+cd dsh-web-search-gongyy
+pnpm install && pnpm build     # dist/ 不入库，必须先构建（见下方说明）
+```
+
+然后用下面的界面方式安装，路径填这个仓库的**绝对路径**。
+
+> 目前**没有发布到 npm** —— 只能从源码路径安装。`package.json` 里的 `version` 是 `0.0.1`，
+> 首次对外发布时要一起确定（打 tag 与 npm 版本号）。
+
 ### 只有界面一条路（`desktop` profile）
 
 侧栏 **插件** → **Add plugin** → 填入本仓库的**绝对路径**（或发布后的包名）→ 安装 → **重启 dsh**。
