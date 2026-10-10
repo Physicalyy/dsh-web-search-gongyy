@@ -101,7 +101,11 @@ pnpm install && pnpm build     # dist/ 不入库，必须先构建（见下方�
 
 **最省事的办法是在插件页里直接填**：侧栏 **插件** → `dsh-web-search-gongyy` 的详情页有两个 Key 输入框，
 粘贴后点保存即可 —— Key 会写进 dsh 的**托管凭据域**（`$DSH_HOME/.credentials.yaml`），
-**不会**落到 `cordis.patch.yml`。界面只显示"已设置 / 未设置"，不会回显 Key 本身。
+**不会**落到 `cordis.patch.yml`。
+
+- 框里那排 **圆点**只表示"已经配了 Key"，它**不会被保存**（在圆点后面接着打字也不会污染保存值）
+- 留空保存**不会**清掉已存的 Key（那是无操作）
+- 界面**不会回显**真实 Key —— 右上角徽标显示"已设置 / 未设置"
 
 也可以手编凭据文件（`$DSH_HOME/.credentials.yaml`，默认 `~/.dsh/.credentials.yaml`）：
 

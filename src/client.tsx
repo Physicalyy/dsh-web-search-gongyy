@@ -63,9 +63,11 @@ const zh = {
   maxResultsHint: '正整数。调用方未指定条数时使用。',
   maxResultsInvalid: '必须是正整数',
   anysearchKeyLabel: 'AnySearch API Key',
-  anysearchKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。AnySearch 支持匿名，留空即可。',
+  anysearchKeyHint:
+    '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。框里那排圆点只是"已配置"的提示，不会被保存；留空保存也不会清掉已存的 Key。',
   tavilyKeyLabel: 'Tavily API Key',
-  tavilyKeyHint: '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。',
+  tavilyKeyHint:
+    '直接粘贴 Key，保存时写进凭据域（不会落到配置文件）。框里那排圆点只是"已配置"的提示，不会被保存；留空保存也不会清掉已存的 Key。',
   keyReadOnlyHint:
     '这个引用由启动 dsh 的**环境变量**提供（只读）：在这里写会被它遮蔽，所以宿主拒绝了编辑。想在这里改，就先在启动 dsh 的环境里去掉那个变量。',
   keySet: '已设置',
@@ -91,9 +93,11 @@ const en: Record<DictKey, string> = {
   maxResultsHint: 'A positive integer. Used when the caller does not specify a count.',
   maxResultsInvalid: 'Must be a positive integer',
   anysearchKeyLabel: 'AnySearch API key',
-  anysearchKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file). AnySearch works anonymously — leave blank.',
+  anysearchKeyHint:
+    'Paste the key; saving writes it to the credential store (never to the config file). The dots only mean a key is configured — they are never saved, and saving a blank field keeps the stored key.',
   tavilyKeyLabel: 'Tavily API key',
-  tavilyKeyHint: 'Paste the key; saving writes it to the credential store (never to the config file).',
+  tavilyKeyHint:
+    'Paste the key; saving writes it to the credential store (never to the config file). The dots only mean a key is configured — they are never saved, and saving a blank field keeps the stored key.',
   keyReadOnlyHint:
     'This reference is supplied by the **environment variable** that launched dsh (read-only): a write here would be shadowed, so the Host refuses editing. To edit it here, remove that variable from the environment you start dsh with.',
   keySet: 'Configured',
@@ -151,6 +155,26 @@ interface CredentialState {
   readonly ref: string;
   readonly configured: boolean;
   readonly writable: boolean;
+}
+
+/**
+ * Key 框在"已配置、且草稿为空"时显示的掩码。
+ *
+ * 为什么要有它：框架的凭据控件是**只写不读**的，默认永远空白，只能靠右侧徽标知道有没有配。
+ * 用户希望框里也能一眼看出"已经配了"。
+ *
+ * **掩码只是展示，绝不可能变成保存的值** —— `•` 不可能是任何真实 API Key 的字符，所以：
+ * 1) 每次编辑先 `stripMask` 再进草稿；2) `writeKey` 里再剥一次（双保险）；
+ * 3) 剥完为空就不写（= 官方那句"留空表示保持当前密钥"）。
+ *
+ * 一处要说清的副作用：把框清空后掩码会**重新出现**（"已配置"仍然成立）—— 那是提示，不是内容。
+ */
+const SECRET_MASK = '••••••••';
+const SECRET_MASK_CHAR = '•';
+
+/** 从草稿里剥掉掩码字符。真实 Key 不含 `•`，所以这一步无损。 */
+function stripMask(text: string): string {
+  return text.split(SECRET_MASK_CHAR).join('');
 }
 
 /**
@@ -341,7 +365,8 @@ function ConfigCard(props: CardProps) {
         state: state.anysearchKey,
         configured: state.anysearchConfigured,
         disabled: disabled || !state.anysearchWritable,
-        onEdit: (text) => props.edit(KEY_FIELD.anysearch, text),
+        // 掩码字符在进草稿前就剥掉 —— 用户在掩码后面接着打字也不会污染保存值
+        onEdit: (text) => props.edit(KEY_FIELD.anysearch, stripMask(text)),
       })}
       {secretField({
         t,
@@ -351,7 +376,7 @@ function ConfigCard(props: CardProps) {
         state: state.tavilyKey,
         configured: state.tavilyConfigured,
         disabled: disabled || !state.tavilyWritable,
-        onEdit: (text) => props.edit(KEY_FIELD.tavily, text),
+        onEdit: (text) => props.edit(KEY_FIELD.tavily, stripMask(text)),
       })}
     </SettingsForm>
   );
@@ -404,12 +429,19 @@ export function apply(ctx: Context): void {
     let publish: () => void = () => {};
 
     function projection(): CardState {
+      /** Key 控件的展示态：草稿为空时用掩码告诉用户"已经配了"。 */
+      const keyField = (kind: CredentialKind): SettingsFieldState => {
+        const field = keys.get(kind) ?? model.field(KEY_FIELD[kind]);
+        const showMask = field.text.length === 0 && credentials[kind].configured;
+        return showMask ? { ...field, text: SECRET_MASK } : field;
+      };
+
       return {
         shell: model.shell(),
         order: model.field('providerOrder'),
         maxResults: model.field('maxResultsPerEngine'),
-        anysearchKey: keys.get('anysearch') ?? model.field(KEY_FIELD.anysearch),
-        tavilyKey: keys.get('tavily') ?? model.field(KEY_FIELD.tavily),
+        anysearchKey: keyField('anysearch'),
+        tavilyKey: keyField('tavily'),
         anysearchConfigured: credentials.anysearch.configured,
         tavilyConfigured: credentials.tavily.configured,
         anysearchWritable: credentials.anysearch.writable,
@@ -451,9 +483,14 @@ export function apply(ctx: Context): void {
       publish();
     }
 
-    /** 保存时把草稿写进凭据域。框架保证空草稿不会调到这里。 */
+    /** 保存时把草稿写进凭据域。掩码在这里**再剥一次**（双保险），空值不写。 */
     async function writeKey(kind: CredentialKind, text: string): Promise<boolean> {
-      await ctx.remote.credentials.set(refNameOf(kind), text);
+      const value = stripMask(text);
+      // 只剩掩码（或本来就空）→ 什么都不写，等于"留空保持原密钥"。
+      // 不能把空值写进去：宿主对空值会直接抛错（`an empty value cannot be stored`）。
+      if (value.length === 0) return credentials[kind].configured;
+
+      await ctx.remote.credentials.set(refNameOf(kind), value);
       await readCredential(kind);
       return credentials[kind].configured;
     }

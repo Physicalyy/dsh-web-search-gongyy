@@ -457,6 +457,55 @@ describe('客户端 bundle', () => {
     assert.equal(state.anysearchWritable, true, '另一个引用可写，不该被连带禁掉');
   });
 
+  // ── 掩码：只是"已配置"的提示，绝不能变成保存的值（用户要求像官方那样显示圆点）──
+
+  it('已配置时 Key 框显示掩码，未配置时保持空白', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, calls, credentials } = fakeContext();
+
+    credentials.views.TAVILY_API_KEY = { configured: true, writable: true };
+    exports.apply(ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const injected = calls.find((call) => call.kind === 'slots.register')?.options?.inject?.();
+    const state = injected.hooks.webSearchConfig.getSnapshot();
+
+    assert.equal(state.tavilyKey.text, '••••••••', '已配置 → 框里显示掩码');
+    assert.equal(state.anysearchKey.text, '', '未配置 → 保持空白');
+  });
+
+  it('用户在掩码后面打字 → 保存的值里没有掩码字符', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, credentials } = fakeContext();
+    exports.apply(ctx);
+
+    const tavily = stub.calls.constructed[0].secrets.find((s) => s.field === 'tavilyApiKeyCredential');
+    // 模拟"框里本来是掩码，用户接着输入"：onChange 给出的整串是 掩码+输入
+    assert.equal(await tavily.write('••••••••tvly-real-key'), true);
+    assert.deepEqual(credentials.set.at(-1), { ref: 'TAVILY_API_KEY', value: 'tvly-real-key' });
+  });
+
+  it('只提交掩码或空串时**不写**任何东西 —— 等于"留空保持原密钥"', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, credentials } = fakeContext();
+
+    credentials.views.TAVILY_API_KEY = { configured: true, writable: true };
+    exports.apply(ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const before = credentials.set.length;
+    const tavily = stub.calls.constructed[0].secrets.find((s) => s.field === 'tavilyApiKeyCredential');
+
+    assert.equal(await tavily.write('••••••••'), true, '视为无操作，并回报"仍然已配置"');
+    assert.equal(await tavily.write(''), true);
+    assert.equal(credentials.set.length, before, '一次 set 都不该发出（空值写进去宿主会抛错）');
+  });
+
   it('apply() 在没有这些服务时不该抛错（失败模式必须是降级而非崩溃）', () => {
     const exports = loadBundle().factory((spec) => platformRequire(spec, stubPrimitives()));
     const ctx = {
