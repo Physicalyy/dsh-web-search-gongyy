@@ -365,8 +365,8 @@ function ConfigCard(props: CardProps) {
         state: state.anysearchKey,
         configured: state.anysearchConfigured,
         disabled: disabled || !state.anysearchWritable,
-        // 掩码字符在进草稿前就剥掉 —— 用户在掩码后面接着打字也不会污染保存值
-        onEdit: (text) => props.edit(KEY_FIELD.anysearch, stripMask(text)),
+        // 掩码字符由 action 层（`edit` 包装）剥掉 —— 视图只如实上报输入
+        onEdit: (text) => props.edit(KEY_FIELD.anysearch, text),
       })}
       {secretField({
         t,
@@ -376,7 +376,7 @@ function ConfigCard(props: CardProps) {
         state: state.tavilyKey,
         configured: state.tavilyConfigured,
         disabled: disabled || !state.tavilyWritable,
-        onEdit: (text) => props.edit(KEY_FIELD.tavily, stripMask(text)),
+        onEdit: (text) => props.edit(KEY_FIELD.tavily, text),
       })}
     </SettingsForm>
   );
@@ -416,8 +416,13 @@ export function apply(ctx: Context): void {
       tavily: { ref: '', configured: false, writable: true },
     };
 
-    /** Key 控件当前的草稿（由表单模型持有），投影时读它。 */
-    const keys = new Map<CredentialKind, SettingsFieldState>();
+    /**
+     * 用户是否已经动过某个 Key 框。
+     *
+     * 为什么要记：掩码只在"已配置且用户没动过"时显示。否则用户清空输入框后掩码会**立刻**
+     * 冒回来，看起来像"删除没反应"（真踩过一次）。
+     */
+    const touched: Record<CredentialKind, boolean> = { anysearch: false, tavily: false };
 
     /** 当前 Key 存在哪个引用名下：看配置里 `*ApiKeyEnv`，没配就用默认。 */
     function refNameOf(kind: CredentialKind): string {
@@ -429,10 +434,15 @@ export function apply(ctx: Context): void {
     let publish: () => void = () => {};
 
     function projection(): CardState {
-      /** Key 控件的展示态：草稿为空时用掩码告诉用户"已经配了"。 */
+      /**
+       * Key 控件的展示态。
+       *
+       * **必须每次现取 `model.field()`** —— 它返回的是"此刻"的快照；把它存进变量/Map 缓存起来，
+       * 投影就永远读到初始化时的空白草稿，打字与删除都会"没反应"（踩过一次，见 spec 第 12.6 节）。
+       */
       const keyField = (kind: CredentialKind): SettingsFieldState => {
-        const field = keys.get(kind) ?? model.field(KEY_FIELD[kind]);
-        const showMask = field.text.length === 0 && credentials[kind].configured;
+        const field = model.field(KEY_FIELD[kind]);
+        const showMask = !touched[kind] && field.text.length === 0 && credentials[kind].configured;
         return showMask ? { ...field, text: SECRET_MASK } : field;
       };
 
@@ -504,8 +514,6 @@ export function apply(ctx: Context): void {
     const model = new SettingsFormModel<Record<string, unknown>>(scope, SPECS, secretSpecs);
     ctx.effect(() => () => model.dispose(), 'web-search-gongyy: form subscription');
 
-    for (const kind of KINDS) keys.set(kind, model.field(KEY_FIELD[kind]));
-
     const store = model.bind(() => projection());
     publish = () => store.set(projection());
 
@@ -541,7 +549,19 @@ export function apply(ctx: Context): void {
                 // 按 npm 包名分发 —— 插件页用 entryKey: pkg.name 匹配。
                 key: 'dsh-web-search-gongyy',
                 locale: NS,
-                inject: () => ({ hooks: { webSearchConfig: store }, ...model.actions() }),
+                // 包一层 `edit`：用户一动 Key 框就记下"碰过了"，掩码从此不再顶替他的输入。
+                inject: () => {
+                  const actions = model.actions();
+                  return {
+                    hooks: { webSearchConfig: store },
+                    ...actions,
+                    edit: (field: string, text: string) => {
+                      if (field === KEY_FIELD.anysearch) touched.anysearch = true;
+                      if (field === KEY_FIELD.tavily) touched.tavily = true;
+                      actions.edit(field, stripMask(text));
+                    },
+                  };
+                },
               },
               ConfigCard as never,
             ),

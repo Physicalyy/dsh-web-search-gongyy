@@ -45,14 +45,21 @@ function stubPrimitives() {
   const calls = { constructed: [], bound: 0, disposed: 0, published: [] };
 
   class SettingsFormModel {
+    /**
+     * **桩要有状态**：真实的 `field(name)` 返回"此刻"的草稿快照。
+     * 如果桩永远返回空白，就测不出"把 field() 的结果缓存起来"这类 bug
+     * （真踩过一次：输入框打字没反应）。
+     */
+    staged = new Map();
+
     constructor(scope, specs, secrets) {
       calls.constructed.push({ scope, specs, secrets });
     }
     shell() {
       return { available: true, writable: true, dirty: false, invalid: false, saving: false, failed: false };
     }
-    field() {
-      return { text: '', overridden: false, invalid: false };
+    field(name) {
+      return { text: this.staged.get(name)?.text ?? '', overridden: false, invalid: false };
     }
     bind(project) {
       calls.bound += 1;
@@ -65,7 +72,12 @@ function stubPrimitives() {
       };
     }
     actions() {
-      return { edit: () => {}, resetField: () => {}, save: () => {}, discard: () => {} };
+      return {
+        edit: (field, text) => this.staged.set(field, { text }),
+        resetField: (field) => this.staged.delete(field),
+        save: () => {},
+        discard: () => this.staged.clear(),
+      };
     }
     dispose() {
       calls.disposed += 1;
@@ -504,6 +516,32 @@ describe('客户端 bundle', () => {
     assert.equal(await tavily.write('••••••••'), true, '视为无操作，并回报"仍然已配置"');
     assert.equal(await tavily.write(''), true);
     assert.equal(credentials.set.length, before, '一次 set 都不该发出（空值写进去宿主会抛错）');
+  });
+
+  it('在 Key 框里输入 → 投影跟着变；清空 → 掩码不再顶替（曾经的 bug：打字/删除"没反应"）', async () => {
+    const stub = stubPrimitives();
+    const exports = loadBundle().factory((spec) => platformRequire(spec, stub));
+    const { ctx, calls, credentials } = fakeContext();
+
+    credentials.views.TAVILY_API_KEY = { configured: true, writable: true };
+    exports.apply(ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const injected = calls.find((call) => call.kind === 'slots.register')?.options?.inject?.();
+    const store = injected.hooks.webSearchConfig;
+    const keyText = () => store.getSnapshot().tavilyKey.text;
+
+    assert.equal(keyText(), '••••••••', '初始：已配置 → 掩码');
+
+    injected.edit('tavilyApiKeyCredential', 'tvly-typed');
+    assert.equal(keyText(), 'tvly-typed', '输入后草稿必须盖过掩码');
+
+    injected.edit('tavilyApiKeyCredential', '••••••••tvly-typed-after-mask');
+    assert.equal(keyText(), 'tvly-typed-after-mask', '在掩码后面接着打字也不该带出掩码字符');
+
+    injected.edit('tavilyApiKeyCredential', '');
+    assert.equal(keyText(), '', '清空后不该又冒出掩码（否则看起来像删除没反应）');
   });
 
   it('apply() 在没有这些服务时不该抛错（失败模式必须是降级而非崩溃）', () => {
